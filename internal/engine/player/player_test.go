@@ -14,6 +14,25 @@ func TestReputationAtDefaultsToZero(t *testing.T) {
 	}
 }
 
+func TestHasDiscoveredAndHasClaimedAnomalyDefaultFalse(t *testing.T) {
+	p := Player{
+		Discovered:       map[galaxy.NodeID]bool{"sys-000": true},
+		ClaimedAnomalies: map[galaxy.NodeID]bool{"sys-000": true},
+	}
+	if !p.HasDiscovered("sys-000") {
+		t.Fatal("expected sys-000 to be discovered")
+	}
+	if p.HasDiscovered("sys-001") {
+		t.Fatal("expected an unsurveyed system to not be discovered")
+	}
+	if !p.HasClaimedAnomaly("sys-000") {
+		t.Fatal("expected sys-000's anomaly to be claimed")
+	}
+	if p.HasClaimedAnomaly("sys-001") {
+		t.Fatal("expected an unvisited system's anomaly to not be claimed")
+	}
+}
+
 func TestAlignmentNudgeMovesTowardContribution(t *testing.T) {
 	var a Alignment
 	for i := 0; i < 50; i++ {

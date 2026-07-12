@@ -77,6 +77,28 @@ func (s *Store) savePlayer(ctx context.Context, p player.Player) error {
 		}
 	}
 
+	if _, err := tx.ExecContext(ctx, `DELETE FROM player_discovered`); err != nil {
+		return fmt.Errorf("sqlite: clear player discovered: %w", err)
+	}
+	for node := range p.Discovered {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO player_discovered (node_id) VALUES (?)`, node,
+		); err != nil {
+			return fmt.Errorf("sqlite: save player discovered %s: %w", node, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM player_claimed_anomalies`); err != nil {
+		return fmt.Errorf("sqlite: clear player claimed anomalies: %w", err)
+	}
+	for node := range p.ClaimedAnomalies {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO player_claimed_anomalies (node_id) VALUES (?)`, node,
+		); err != nil {
+			return fmt.Errorf("sqlite: save player claimed anomaly %s: %w", node, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: save player: %w", err)
 	}
@@ -142,6 +164,42 @@ func (s *Store) GetPlayer(ctx context.Context) (player.Player, error) {
 	}
 	if err := repRows.Err(); err != nil {
 		return player.Player{}, fmt.Errorf("sqlite: get player reputation: %w", err)
+	}
+
+	discRows, err := s.db.QueryContext(ctx, `SELECT node_id FROM player_discovered`)
+	if err != nil {
+		return player.Player{}, fmt.Errorf("sqlite: get player discovered: %w", err)
+	}
+	defer func() { _ = discRows.Close() }()
+
+	p.Discovered = map[galaxy.NodeID]bool{}
+	for discRows.Next() {
+		var node galaxy.NodeID
+		if err := discRows.Scan(&node); err != nil {
+			return player.Player{}, fmt.Errorf("sqlite: scan player discovered: %w", err)
+		}
+		p.Discovered[node] = true
+	}
+	if err := discRows.Err(); err != nil {
+		return player.Player{}, fmt.Errorf("sqlite: get player discovered: %w", err)
+	}
+
+	claimRows, err := s.db.QueryContext(ctx, `SELECT node_id FROM player_claimed_anomalies`)
+	if err != nil {
+		return player.Player{}, fmt.Errorf("sqlite: get player claimed anomalies: %w", err)
+	}
+	defer func() { _ = claimRows.Close() }()
+
+	p.ClaimedAnomalies = map[galaxy.NodeID]bool{}
+	for claimRows.Next() {
+		var node galaxy.NodeID
+		if err := claimRows.Scan(&node); err != nil {
+			return player.Player{}, fmt.Errorf("sqlite: scan player claimed anomalies: %w", err)
+		}
+		p.ClaimedAnomalies[node] = true
+	}
+	if err := claimRows.Err(); err != nil {
+		return player.Player{}, fmt.Errorf("sqlite: get player claimed anomalies: %w", err)
 	}
 
 	return p, nil

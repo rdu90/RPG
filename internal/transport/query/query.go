@@ -7,6 +7,7 @@ package query
 import (
 	"github.com/rdu90/RPG/internal/engine"
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/explore"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
@@ -24,6 +25,10 @@ type GetPlayer = engine.GetPlayer
 
 // GetMarket returns commodity prices at the player's current system.
 type GetMarket = engine.GetMarket
+
+// GetAnomaly returns whether the player's current system hides an anomaly,
+// and whether it has already been claimed.
+type GetAnomaly = engine.GetAnomaly
 
 // Game is the result type returned for GetGame and for a successful
 // CreateGame command.
@@ -73,4 +78,31 @@ const (
 	HaggleInProgress = haggle.InProgress
 	HaggleAccepted   = haggle.Accepted
 	HaggleRejected   = haggle.Rejected
+)
+
+// ScoutResult is the result of a ScoutNode command: the newly-surveyed
+// system's anomaly (if any), alongside the player's current state.
+type ScoutResult = engine.ScoutResult
+
+// ClaimAnomalyResult is the result of a ClaimAnomaly command: the anomaly
+// just collected, alongside the player's current state.
+type ClaimAnomalyResult = engine.ClaimAnomalyResult
+
+// AnomalyStatus is the result of GetAnomaly: what (if anything) is hidden
+// at a system, and whether it's already been claimed.
+type AnomalyStatus = engine.AnomalyStatus
+
+// Anomaly is a secret a system may hide, discoverable by scouting it or
+// flying there.
+type Anomaly = explore.Anomaly
+
+// AnomalyKind identifies what sort of anomaly a system hides.
+type AnomalyKind = explore.Kind
+
+// The possible values of AnomalyKind.
+const (
+	AnomalyNone     = explore.KindNone
+	AnomalyDerelict = explore.KindDerelict
+	AnomalyBeacon   = explore.KindBeacon
+	AnomalyCache    = explore.KindCache
 )

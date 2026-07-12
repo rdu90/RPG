@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/explore"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/ports"
+	"github.com/rdu90/RPG/internal/rng"
 )
 
 // fakeRepo is an in-memory ports.Repository, standing in for a real
@@ -103,6 +105,9 @@ func TestCreateGameWiresUpNewSave(t *testing.T) {
 	if repo.player.Turns.Remaining != turnsMax {
 		t.Fatalf("expected full turns %d, got %d", turnsMax, repo.player.Turns.Remaining)
 	}
+	if !repo.player.HasDiscovered(repo.player.NodeID) {
+		t.Fatal("expected the starting system to already be discovered")
+	}
 }
 
 func TestMoveAlongWarpLane(t *testing.T) {
@@ -124,6 +129,9 @@ func TestMoveAlongWarpLane(t *testing.T) {
 	}
 	if p.Turns.Remaining != turnsMax-edge.TurnCost {
 		t.Fatalf("expected %d turns remaining, got %d", turnsMax-edge.TurnCost, p.Turns.Remaining)
+	}
+	if !p.HasDiscovered(edge.To) {
+		t.Fatal("expected the destination to be discovered after arriving")
 	}
 }
 
@@ -397,6 +405,204 @@ func TestGetMarketReturnsCurrentSystemPrices(t *testing.T) {
 	want := repo.market[repo.player.NodeID]
 	if len(prices) != len(want) {
 		t.Fatalf("expected %d prices, got %d", len(want), len(prices))
+	}
+}
+
+func TestScoutNodeDiscoversAdjacentSystemAtHalfTurnCost(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	start := repo.player.NodeID
+	edge := repo.galaxy.Neighbors(start)[0]
+	before := repo.player.Turns.Remaining
+
+	res, err := e.Execute(context.Background(), ScoutNode{To: edge.To})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(ScoutResult)
+	if result.NodeID != edge.To {
+		t.Fatalf("expected scout result for %s, got %s", edge.To, result.NodeID)
+	}
+	if !result.Player.HasDiscovered(edge.To) {
+		t.Fatal("expected the scouted node to be discovered")
+	}
+	if result.Player.NodeID != start {
+		t.Fatalf("expected scouting to not move the player, still at %s, got %s", start, result.Player.NodeID)
+	}
+
+	wantCost := scoutCost(edge.TurnCost)
+	if got := before - result.Player.Turns.Remaining; got != wantCost {
+		t.Fatalf("expected scouting to cost %d turns, spent %d", wantCost, got)
+	}
+	if wantCost > edge.TurnCost {
+		t.Fatalf("expected scouting (%d) to never cost more than flying (%d)", wantCost, edge.TurnCost)
+	}
+}
+
+func TestScoutNodeRejectsNonAdjacentNode(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	start := repo.player.NodeID
+	neighbors := map[galaxy.NodeID]bool{}
+	for _, e := range repo.galaxy.Neighbors(start) {
+		neighbors[e.To] = true
+	}
+	var farNode galaxy.NodeID
+	for _, n := range repo.galaxy.Nodes {
+		if n.ID != start && !neighbors[n.ID] {
+			farNode = n.ID
+			break
+		}
+	}
+	if farNode == "" {
+		t.Skip("galaxy is fully connected at this seed; nothing to test")
+	}
+
+	if _, err := e.Execute(context.Background(), ScoutNode{To: farNode}); err == nil {
+		t.Fatal("expected error scouting a non-adjacent node")
+	}
+	if repo.player.HasDiscovered(farNode) {
+		t.Fatal("expected a rejected scout to not discover anything")
+	}
+}
+
+func TestScoutNodeRejectsAlreadyDiscoveredNode(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	edge := repo.galaxy.Neighbors(repo.player.NodeID)[0]
+	if _, err := e.Execute(context.Background(), ScoutNode{To: edge.To}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := e.Execute(context.Background(), ScoutNode{To: edge.To}); err == nil {
+		t.Fatal("expected error re-scouting an already-discovered system")
+	}
+}
+
+// anomalyAtSeed replays the same deterministic roll the engine uses, so
+// tests can locate a node that does (or doesn't) hide something without
+// depending on random luck.
+func anomalyAtSeed(gameID ports.GameID, n galaxy.Node) explore.Anomaly {
+	return explore.At(rng.New(anomalySeed(gameID, n.ID)), n.DevelopmentLevel)
+}
+
+func TestClaimAnomalyCollectsRewardOnce(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var target galaxy.NodeID
+	var want explore.Anomaly
+	for _, n := range repo.galaxy.Nodes {
+		if a := anomalyAtSeed(repo.game.ID, n); !a.Empty() {
+			target, want = n.ID, a
+			break
+		}
+	}
+	if target == "" {
+		t.Skip("no anomaly present anywhere in this galaxy at this seed")
+	}
+
+	repo.player.NodeID = target
+	creditsBefore := repo.player.Credits
+	repBefore := repo.player.ReputationAt(target)
+
+	res, err := e.Execute(context.Background(), ClaimAnomaly{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(ClaimAnomalyResult)
+	if result.Anomaly != want {
+		t.Fatalf("expected anomaly %+v, got %+v", want, result.Anomaly)
+	}
+	if result.Player.Credits != creditsBefore+want.CreditsReward {
+		t.Fatalf("expected credits %d, got %d", creditsBefore+want.CreditsReward, result.Player.Credits)
+	}
+	if got := result.Player.ReputationAt(target); got != repBefore+want.ReputationReward {
+		t.Fatalf("expected reputation %d, got %d", repBefore+want.ReputationReward, got)
+	}
+	if !result.Player.HasClaimedAnomaly(target) {
+		t.Fatal("expected the anomaly to be marked claimed")
+	}
+
+	if _, err := e.Execute(context.Background(), ClaimAnomaly{}); err == nil {
+		t.Fatal("expected error claiming an already-claimed anomaly")
+	}
+}
+
+func TestClaimAnomalyErrorsWhenNothingHidden(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var target galaxy.NodeID
+	for _, n := range repo.galaxy.Nodes {
+		if anomalyAtSeed(repo.game.ID, n).Empty() {
+			target = n.ID
+			break
+		}
+	}
+	if target == "" {
+		t.Skip("every system in this galaxy hides an anomaly at this seed")
+	}
+
+	repo.player.NodeID = target
+	if _, err := e.Execute(context.Background(), ClaimAnomaly{}); err == nil {
+		t.Fatal("expected error claiming when nothing is hidden")
+	}
+}
+
+func TestGetAnomalyReflectsClaimedState(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var target galaxy.NodeID
+	var want explore.Anomaly
+	for _, n := range repo.galaxy.Nodes {
+		if a := anomalyAtSeed(repo.game.ID, n); !a.Empty() {
+			target, want = n.ID, a
+			break
+		}
+	}
+	if target == "" {
+		t.Skip("no anomaly present anywhere in this galaxy at this seed")
+	}
+	repo.player.NodeID = target
+
+	res, err := e.Query(context.Background(), GetAnomaly{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	status := res.(AnomalyStatus)
+	if status.Anomaly != want {
+		t.Fatalf("expected anomaly %+v, got %+v", want, status.Anomaly)
+	}
+	if status.Claimed {
+		t.Fatal("expected the anomaly to be unclaimed before collecting it")
+	}
+
+	if _, err := e.Execute(context.Background(), ClaimAnomaly{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res2, err := e.Query(context.Background(), GetAnomaly{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res2.(AnomalyStatus).Claimed {
+		t.Fatal("expected the anomaly to be claimed after collecting it")
 	}
 }
 

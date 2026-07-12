@@ -25,3 +25,11 @@ type HaggleWalkAway = engine.HaggleWalkAway
 
 // HaggleAccept accepts the NPC's current offer, closing the negotiation.
 type HaggleAccept = engine.HaggleAccept
+
+// ScoutNode surveys a system adjacent to the player's current one without
+// flying there.
+type ScoutNode = engine.ScoutNode
+
+// ClaimAnomaly collects the reward from an unclaimed anomaly at the
+// player's current system.
+type ClaimAnomaly = engine.ClaimAnomaly

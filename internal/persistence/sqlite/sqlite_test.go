@@ -89,13 +89,15 @@ func TestPlayerRoundTrip(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	p := player.Player{
-		Credits:       500,
-		NodeID:        "sys-000",
-		CargoCapacity: 40,
-		Cargo:         map[economy.CommodityID]int{"food": 5, "weapons": 2},
-		Turns:         turn.New(100, 20*time.Second, now),
-		Reputation:    map[galaxy.NodeID]int{"sys-000": 5, "sys-001": -3},
-		Alignment:     player.Alignment{Legality: 0.4, Morality: -0.2},
+		Credits:          500,
+		NodeID:           "sys-000",
+		CargoCapacity:    40,
+		Cargo:            map[economy.CommodityID]int{"food": 5, "weapons": 2},
+		Turns:            turn.New(100, 20*time.Second, now),
+		Reputation:       map[galaxy.NodeID]int{"sys-000": 5, "sys-001": -3},
+		Alignment:        player.Alignment{Legality: 0.4, Morality: -0.2},
+		Discovered:       map[galaxy.NodeID]bool{"sys-000": true, "sys-001": true},
+		ClaimedAnomalies: map[galaxy.NodeID]bool{"sys-000": true},
 	}
 
 	if err := s.InitPlayer(ctx, p); err != nil {
@@ -122,14 +124,23 @@ func TestPlayerRoundTrip(t *testing.T) {
 	if got.Alignment != p.Alignment {
 		t.Fatalf("alignment mismatch: got %+v, want %+v", got.Alignment, p.Alignment)
 	}
+	if !reflect.DeepEqual(got.Discovered, p.Discovered) {
+		t.Fatalf("discovered mismatch: got %+v, want %+v", got.Discovered, p.Discovered)
+	}
+	if !reflect.DeepEqual(got.ClaimedAnomalies, p.ClaimedAnomalies) {
+		t.Fatalf("claimed anomalies mismatch: got %+v, want %+v", got.ClaimedAnomalies, p.ClaimedAnomalies)
+	}
 
-	// SavePlayer must overwrite scalar fields and fully replace cargo and
-	// reputation (including removing entries, not just upserting them).
+	// SavePlayer must overwrite scalar fields and fully replace cargo,
+	// reputation, discovered, and claimed anomalies (including removing
+	// entries, not just upserting them).
 	p.Credits = 250
 	p.NodeID = "sys-001"
 	p.Cargo = map[economy.CommodityID]int{"food": 1}
 	p.Reputation = map[galaxy.NodeID]int{"sys-001": 10}
 	p.Alignment = player.Alignment{Legality: -0.6, Morality: 0.1}
+	p.Discovered = map[galaxy.NodeID]bool{"sys-001": true}
+	p.ClaimedAnomalies = map[galaxy.NodeID]bool{}
 	if err := s.SavePlayer(ctx, p); err != nil {
 		t.Fatalf("save player: %v", err)
 	}
@@ -149,5 +160,11 @@ func TestPlayerRoundTrip(t *testing.T) {
 	}
 	if got.Alignment != p.Alignment {
 		t.Fatalf("expected updated alignment, got %+v", got.Alignment)
+	}
+	if !reflect.DeepEqual(got.Discovered, map[galaxy.NodeID]bool{"sys-001": true}) {
+		t.Fatalf("expected discovered fully replaced, got %+v", got.Discovered)
+	}
+	if len(got.ClaimedAnomalies) != 0 {
+		t.Fatalf("expected claimed anomalies fully cleared, got %+v", got.ClaimedAnomalies)
 	}
 }

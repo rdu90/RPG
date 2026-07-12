@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -238,5 +239,99 @@ func TestFlyAndHaggleRoundTrip(t *testing.T) {
 	}
 	if m2.player.Turns.Remaining != m.player.Turns.Remaining {
 		t.Fatalf("expected reloaded turns %d, got %d", m.player.Turns.Remaining, m2.player.Turns.Remaining)
+	}
+}
+
+func TestScoutRevealsSystemAtHalfTurnCost(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	neighbors := m.galaxy.Neighbors(m.player.NodeID)
+	if len(neighbors) == 0 {
+		t.Fatal("expected at least one warp lane from the starting system")
+	}
+	target := neighbors[0].To // mapCursor starts at 0
+	if m.player.HasDiscovered(target) {
+		t.Skip("first neighbor already discovered at this seed; nothing to scout")
+	}
+	edgeCost := neighbors[0].TurnCost
+	turnsBefore := m.player.Turns.Remaining
+
+	m = key(t, m, "x")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap after scouting, got %v (err=%v)", m.state, m.err)
+	}
+	if !m.player.HasDiscovered(target) {
+		t.Fatal("expected the scouted system to be discovered")
+	}
+	if m.player.NodeID == target {
+		t.Fatal("expected scouting to not move the player")
+	}
+	wantCost := (edgeCost + 1) / 2
+	if got := turnsBefore - m.player.Turns.Remaining; got != wantCost {
+		t.Fatalf("expected scouting to cost %d turns, spent %d", wantCost, got)
+	}
+	if !strings.Contains(m.View(), "Scout report:") {
+		t.Fatalf("expected a scout report on the map screen, got:\n%s", m.View())
+	}
+
+	// Scouting an already-discovered system is guarded client-side as a
+	// no-op, so it costs nothing further.
+	m2 := key(t, m, "x")
+	if m2.player.Turns.Remaining != m.player.Turns.Remaining {
+		t.Fatal("expected re-scouting an already-discovered system to cost nothing")
+	}
+}
+
+func TestClaimAnomalyAtStartingSystem(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	var m Model
+	found := false
+	for i := 0; i < 40 && !found; i++ {
+		m = New(openSave, listSaves)
+		m = key(t, m, "enter") // New Game
+		m = typeString(t, m, fmt.Sprintf("save%d", i))
+		m = key(t, m, "enter")
+		if m.state != stateMap {
+			t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+		}
+		found = !m.anomaly.Anomaly.Empty()
+	}
+	if !found {
+		t.Skip("could not roll a starting system with an anomaly within the attempt budget")
+	}
+
+	creditsBefore := m.player.Credits
+	repBefore := m.player.ReputationAt(m.player.NodeID)
+	wantAnomaly := m.anomaly.Anomaly
+
+	m = key(t, m, "c")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap after claiming, got %v (err=%v)", m.state, m.err)
+	}
+	if !m.anomaly.Claimed {
+		t.Fatal("expected the anomaly to be marked claimed")
+	}
+	if m.player.Credits != creditsBefore+wantAnomaly.CreditsReward {
+		t.Fatalf("expected credits %d, got %d", creditsBefore+wantAnomaly.CreditsReward, m.player.Credits)
+	}
+	if got := m.player.ReputationAt(m.player.NodeID); got != repBefore+wantAnomaly.ReputationReward {
+		t.Fatalf("expected reputation %d, got %d", repBefore+wantAnomaly.ReputationReward, got)
+	}
+
+	// Claiming again is guarded client-side as a no-op.
+	m2 := key(t, m, "c")
+	if m2.player.Credits != m.player.Credits {
+		t.Fatal("expected re-claiming an already-claimed anomaly to do nothing")
 	}
 }

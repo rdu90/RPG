@@ -19,3 +19,9 @@ func (GetPlayer) isQuery() {}
 type GetMarket struct{}
 
 func (GetMarket) isQuery() {}
+
+// GetAnomaly returns whether the player's current system hides an anomaly,
+// and whether it has already been claimed.
+type GetAnomaly struct{}
+
+func (GetAnomaly) isQuery() {}

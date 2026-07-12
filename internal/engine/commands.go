@@ -56,3 +56,18 @@ type HaggleAccept struct {
 }
 
 func (HaggleAccept) isCommand() {}
+
+// ScoutNode surveys a system adjacent to the player's current one without
+// flying there, revealing it (and any anomaly hidden there) at half the
+// turn cost of a full flight.
+type ScoutNode struct {
+	To galaxy.NodeID
+}
+
+func (ScoutNode) isCommand() {}
+
+// ClaimAnomaly collects the reward from an unclaimed anomaly at the
+// player's current system.
+type ClaimAnomaly struct{}
+
+func (ClaimAnomaly) isCommand() {}

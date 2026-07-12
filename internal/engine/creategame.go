@@ -53,6 +53,7 @@ func (e *Engine) createGame(ctx context.Context, c CreateGame) (ports.Game, erro
 		Cargo:         map[economy.CommodityID]int{},
 		Turns:         turn.New(turnsMax, turnRefillEvery, game.CreatedAt),
 		Reputation:    map[galaxy.NodeID]int{},
+		Discovered:    map[galaxy.NodeID]bool{gal.Nodes[0].ID: true},
 	}
 	if err := e.repo.InitPlayer(ctx, p); err != nil {
 		return ports.Game{}, fmt.Errorf("engine: init player: %w", err)

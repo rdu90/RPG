@@ -44,6 +44,10 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 		return e.haggleWalkAway(ctx, c)
 	case HaggleAccept:
 		return e.haggleAccept(ctx, c)
+	case ScoutNode:
+		return e.scoutNode(ctx, c)
+	case ClaimAnomaly:
+		return e.claimAnomaly(ctx, c)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}
@@ -60,6 +64,8 @@ func (e *Engine) Query(ctx context.Context, q Query) (any, error) {
 		return e.repo.GetPlayer(ctx)
 	case GetMarket:
 		return e.getMarket(ctx)
+	case GetAnomaly:
+		return e.getAnomaly(ctx)
 	default:
 		return nil, fmt.Errorf("engine: unhandled query %T", q)
 	}

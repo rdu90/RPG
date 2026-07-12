@@ -10,13 +10,15 @@ import (
 
 // Player is a save's single player state.
 type Player struct {
-	Credits       int
-	NodeID        galaxy.NodeID
-	CargoCapacity int
-	Cargo         map[economy.CommodityID]int
-	Turns         turn.Allowance
-	Reputation    map[galaxy.NodeID]int
-	Alignment     Alignment
+	Credits          int
+	NodeID           galaxy.NodeID
+	CargoCapacity    int
+	Cargo            map[economy.CommodityID]int
+	Turns            turn.Allowance
+	Reputation       map[galaxy.NodeID]int
+	Alignment        Alignment
+	Discovered       map[galaxy.NodeID]bool
+	ClaimedAnomalies map[galaxy.NodeID]bool
 }
 
 // CargoUsed returns the total units currently held across all commodities.
@@ -32,6 +34,18 @@ func (p Player) CargoUsed() int {
 // system never visited before.
 func (p Player) ReputationAt(node galaxy.NodeID) int {
 	return p.Reputation[node]
+}
+
+// HasDiscovered reports whether node has been surveyed, either by flying
+// there or by scouting it from an adjacent system.
+func (p Player) HasDiscovered(node galaxy.NodeID) bool {
+	return p.Discovered[node]
+}
+
+// HasClaimedAnomaly reports whether the anomaly (if any) hidden at node has
+// already been collected.
+func (p Player) HasClaimedAnomaly(node galaxy.NodeID) bool {
+	return p.ClaimedAnomalies[node]
 }
 
 // Alignment is the player's derived legal/moral standing, a 2D vector

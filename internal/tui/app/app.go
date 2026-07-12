@@ -61,13 +61,25 @@ type savesLoadedMsg struct {
 }
 
 type worldLoadedMsg struct {
-	galaxy query.Galaxy
-	player query.Player
-	err    error
+	galaxy  query.Galaxy
+	player  query.Player
+	anomaly query.AnomalyStatus
+	err     error
 }
 
 type playerUpdatedMsg struct {
-	player query.Player
+	player  query.Player
+	anomaly query.AnomalyStatus
+	err     error
+}
+
+type scoutedMsg struct {
+	result query.ScoutResult
+	err    error
+}
+
+type anomalyClaimedMsg struct {
+	result query.ClaimAnomalyResult
 	err    error
 }
 
@@ -105,9 +117,11 @@ type Model struct {
 	game   query.Game
 	err    error
 
-	galaxy    query.Galaxy
-	player    query.Player
-	mapCursor int
+	galaxy      query.Galaxy
+	player      query.Player
+	mapCursor   int
+	anomaly     query.AnomalyStatus
+	scoutReport string
 
 	market      []query.Price
 	tradeCursor int
@@ -184,6 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.galaxy = msg.galaxy
 		m.player = msg.player
+		m.anomaly = msg.anomaly
 		m.mapCursor = 0
 		m.state = stateMap
 		return m, nil
@@ -194,7 +209,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.player = msg.player
+		m.anomaly = msg.anomaly
+		m.scoutReport = ""
 		m.state = m.afterWork
+		return m, nil
+	case scoutedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.result.Player
+		m.scoutReport = describeScoutResult(msg.result)
+		m.state = stateMap
+		return m, nil
+	case anomalyClaimedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.result.Player
+		m.anomaly = query.AnomalyStatus{Anomaly: msg.result.Anomaly, Claimed: true}
+		m.state = stateMap
 		return m, nil
 	case marketLoadedMsg:
 		if msg.err != nil {
@@ -339,6 +376,22 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.afterWork = stateMap
 		m.state = stateWorking
 		return m, m.moveCmd(to)
+	case "x":
+		if len(neighbors) == 0 {
+			return m, nil
+		}
+		to := neighbors[m.mapCursor].To
+		if m.player.HasDiscovered(to) {
+			return m, nil
+		}
+		m.state = stateWorking
+		return m, m.scoutCmd(to)
+	case "c":
+		if m.anomaly.Anomaly.Empty() || m.anomaly.Claimed {
+			return m, nil
+		}
+		m.state = stateWorking
+		return m, m.claimAnomalyCmd()
 	case "t":
 		m.state = stateWorking
 		return m, m.loadMarketCmd()
@@ -515,7 +568,11 @@ func loadWorldCmd(client *local.Client) tea.Cmd {
 		if err != nil {
 			return worldLoadedMsg{err: err}
 		}
-		return worldLoadedMsg{galaxy: gRes.(query.Galaxy), player: pRes.(query.Player)}
+		aRes, err := client.Query(context.Background(), query.GetAnomaly{})
+		if err != nil {
+			return worldLoadedMsg{err: err}
+		}
+		return worldLoadedMsg{galaxy: gRes.(query.Galaxy), player: pRes.(query.Player), anomaly: aRes.(query.AnomalyStatus)}
 	}
 }
 
@@ -526,8 +583,43 @@ func (m Model) moveCmd(to query.NodeID) tea.Cmd {
 		if err != nil {
 			return playerUpdatedMsg{err: err}
 		}
-		return playerUpdatedMsg{player: res.(query.Player)}
+		aRes, err := client.Query(context.Background(), query.GetAnomaly{})
+		if err != nil {
+			return playerUpdatedMsg{err: err}
+		}
+		return playerUpdatedMsg{player: res.(query.Player), anomaly: aRes.(query.AnomalyStatus)}
 	}
+}
+
+func (m Model) scoutCmd(to query.NodeID) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.ScoutNode{To: to})
+		if err != nil {
+			return scoutedMsg{err: err}
+		}
+		return scoutedMsg{result: res.(query.ScoutResult)}
+	}
+}
+
+func (m Model) claimAnomalyCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.ClaimAnomaly{})
+		if err != nil {
+			return anomalyClaimedMsg{err: err}
+		}
+		return anomalyClaimedMsg{result: res.(query.ClaimAnomalyResult)}
+	}
+}
+
+// describeScoutResult renders a one-line report of what a scout found (or
+// didn't) at the surveyed system.
+func describeScoutResult(res query.ScoutResult) string {
+	if res.Anomaly.Empty() {
+		return "Scout report: nothing of interest detected."
+	}
+	return fmt.Sprintf("Scout report: sensors detect a %s!", res.Anomaly.Kind)
 }
 
 func (m Model) loadMarketCmd() tea.Cmd {
@@ -653,20 +745,34 @@ func (m Model) viewMap() string {
 		m.player.Turns.Remaining, m.player.Turns.Max,
 		m.player.CargoUsed(), m.player.CargoCapacity)
 
+	if !m.anomaly.Anomaly.Empty() {
+		if m.anomaly.Claimed {
+			s += style.Faint.Render(fmt.Sprintf("The %s here has already been investigated.", m.anomaly.Anomaly.Kind)) + "\n\n"
+		} else {
+			s += style.Selected.Render(fmt.Sprintf("Sensors detect a %s here! Press c to investigate.", m.anomaly.Anomaly.Kind)) + "\n\n"
+		}
+	}
+
 	neighbors := m.galaxy.Neighbors(m.player.NodeID)
 	var target query.NodeID
 	if len(neighbors) > 0 {
 		target = neighbors[m.mapCursor].To
 	}
-	s += renderStarfield(m.galaxy, m.player.NodeID, target) + "\n"
+	visible := visibleNodes(m.galaxy, m.player.Discovered)
+	s += renderStarfield(m.galaxy, m.player.NodeID, target, m.player.Discovered, visible) + "\n"
 
 	s += style.Faint.Render("Warp lanes from here:") + "\n"
 	if len(neighbors) == 0 {
 		s += style.Faint.Render("  (no warp lanes connect this system!)") + "\n"
 	}
 	for i, e := range neighbors {
-		n, _ := m.galaxy.Node(e.To)
-		line := fmt.Sprintf("%s (%d turn%s, dev %d)", n.Name, e.TurnCost, plural(e.TurnCost), n.DevelopmentLevel)
+		var line string
+		if m.player.HasDiscovered(e.To) {
+			n, _ := m.galaxy.Node(e.To)
+			line = fmt.Sprintf("%s (%d turn%s, dev %d)", n.Name, e.TurnCost, plural(e.TurnCost), n.DevelopmentLevel)
+		} else {
+			line = fmt.Sprintf("??? (%d turn%s, unexplored — x to scout)", e.TurnCost, plural(e.TurnCost))
+		}
 		if i == m.mapCursor {
 			s += style.Selected.Render("> "+line) + "\n"
 		} else {
@@ -674,7 +780,11 @@ func (m Model) viewMap() string {
 		}
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, t to trade, esc to menu, q to quit")
+	if m.scoutReport != "" {
+		s += "\n" + style.Faint.Render(m.scoutReport) + "\n"
+	}
+
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, esc to menu, q to quit")
 	return s
 }
 
@@ -769,10 +879,30 @@ const (
 	mapGridH = 14
 )
 
+// visibleNodes returns every node known to exist because it's either
+// discovered outright or lies at the fog boundary: adjacent to a
+// discovered system via a known warp lane. Anything outside this set is
+// true fog — not rendered on the starfield at all.
+func visibleNodes(g query.Galaxy, discovered map[query.NodeID]bool) map[query.NodeID]bool {
+	visible := make(map[query.NodeID]bool, len(discovered))
+	for id, ok := range discovered {
+		if !ok {
+			continue
+		}
+		visible[id] = true
+		for _, e := range g.Neighbors(id) {
+			visible[e.To] = true
+		}
+	}
+	return visible
+}
+
 // renderStarfield draws the galaxy as a scaled ASCII scatter of coordinate
 // nodes: '@' marks the player's current system, '*' the currently
-// highlighted destination, '.' every other known system.
-func renderStarfield(g query.Galaxy, current, target query.NodeID) string {
+// highlighted destination, '.' every other discovered system, ',' a system
+// visible at the fog boundary but not yet surveyed. Anything not in visible
+// is left blank — true fog of war.
+func renderStarfield(g query.Galaxy, current, target query.NodeID, discovered, visible map[query.NodeID]bool) string {
 	if len(g.Nodes) == 0 {
 		return ""
 	}
@@ -793,14 +923,19 @@ func renderStarfield(g query.Galaxy, current, target query.NodeID) string {
 	}
 
 	for _, n := range g.Nodes {
+		if !visible[n.ID] {
+			continue
+		}
 		gx := scaleCoord(n.X, minX, maxX, mapGridW)
 		gy := scaleCoord(n.Y, minY, maxY, mapGridH)
-		ch := '.'
-		switch n.ID {
-		case current:
+		ch := ','
+		switch {
+		case n.ID == current:
 			ch = '@'
-		case target:
+		case n.ID == target:
 			ch = '*'
+		case discovered[n.ID]:
+			ch = '.'
 		}
 		grid[gy][gx] = ch
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
 )
 
@@ -32,6 +33,10 @@ func (e *Engine) move(ctx context.Context, c Move) (player.Player, error) {
 	}
 	p.Turns = turns
 	p.NodeID = c.To
+	if p.Discovered == nil {
+		p.Discovered = map[galaxy.NodeID]bool{}
+	}
+	p.Discovered[c.To] = true
 
 	if err := e.repo.SavePlayer(ctx, p); err != nil {
 		return player.Player{}, err
