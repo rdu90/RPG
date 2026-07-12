@@ -36,3 +36,7 @@ type ClaimAnomaly = engine.ClaimAnomaly
 
 // Colonize founds a colony at the player's current system, producing Focus.
 type Colonize = engine.Colonize
+
+// StartResearch begins researching a tech, replacing any in-progress
+// project (its accumulated progress is lost).
+type StartResearch = engine.StartResearch

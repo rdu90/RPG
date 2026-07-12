@@ -4,6 +4,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
+	"github.com/rdu90/RPG/internal/engine/techtree"
 )
 
 // CreateGame initializes a brand-new save with the given name, generating
@@ -78,3 +79,11 @@ type Colonize struct {
 }
 
 func (Colonize) isCommand() {}
+
+// StartResearch begins researching Tech, replacing any in-progress project
+// (its accumulated progress is lost).
+type StartResearch struct {
+	Tech techtree.TechID
+}
+
+func (StartResearch) isCommand() {}

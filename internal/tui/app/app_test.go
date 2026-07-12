@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -409,6 +410,91 @@ func TestColonizeFoundsColonyFromMap(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "Food Rations") {
 		t.Fatalf("expected the colonies screen to list the founded colony, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "esc")
+	if m.state != stateMap {
+		t.Fatalf("expected esc to return to the map, got %v", m.state)
+	}
+}
+
+func TestResearchTechFromMap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(config.SavePath(dir, "alpha"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	openSave := func(name string) (*local.Client, error) {
+		return local.New(engine.New(store)), nil
+	}
+	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
+
+	m := New(openSave, listSaves)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+	cargoBefore := m.player.CargoCapacity
+
+	m = key(t, m, "r") // open the research screen
+	if m.state != stateTechTree {
+		t.Fatalf("expected stateTechTree, got %v (err=%v)", m.state, m.err)
+	}
+	if len(m.techCatalog) == 0 {
+		t.Fatal("expected a non-empty tech catalog")
+	}
+	if m.techCatalog[0].ID != "cargo-1" {
+		t.Fatalf("expected the first catalog entry to be cargo-1, got %s", m.techCatalog[0].ID)
+	}
+	if !strings.Contains(m.View(), "No active research project") {
+		t.Fatalf("expected no active research yet, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "enter") // start researching cargo-1 (cursor starts at 0)
+	if m.state != stateTechTree {
+		t.Fatalf("expected stateTechTree after starting research, got %v (err=%v)", m.state, m.err)
+	}
+	if m.research.Active != "cargo-1" {
+		t.Fatalf("expected active research cargo-1, got %s", m.research.Active)
+	}
+
+	// Force the research clock far into the past so ticks have elapsed
+	// well past cargo-1's cost, then reload the screen to observe it
+	// complete and its effect land on the player.
+	ctx := context.Background()
+	research, err := store.GetResearch(ctx)
+	if err != nil {
+		t.Fatalf("get research: %v", err)
+	}
+	research.LastTickAt = research.LastTickAt.Add(-time.Hour)
+	if err := store.SaveResearch(ctx, research); err != nil {
+		t.Fatalf("save research: %v", err)
+	}
+
+	m = key(t, m, "esc")
+	if m.state != stateMap {
+		t.Fatalf("expected esc to return to the map, got %v", m.state)
+	}
+	m = key(t, m, "r") // reload the research screen, ticking the rewound clock
+	if m.state != stateTechTree {
+		t.Fatalf("expected stateTechTree, got %v (err=%v)", m.state, m.err)
+	}
+	if !m.research.HasUnlocked("cargo-1") {
+		t.Fatal("expected cargo-1 to have completed")
+	}
+	if m.research.Active != "" {
+		t.Fatalf("expected no active project after completion, got %s", m.research.Active)
+	}
+	wantCapacity := cargoBefore + 5 // cargo-1's magnitude
+	if m.player.CargoCapacity != wantCapacity {
+		t.Fatalf("expected cargo capacity %d, got %d", wantCapacity, m.player.CargoCapacity)
+	}
+	if !strings.Contains(m.View(), "unlocked") {
+		t.Fatalf("expected the catalog to show cargo-1 as unlocked, got:\n%s", m.View())
 	}
 
 	m = key(t, m, "esc")

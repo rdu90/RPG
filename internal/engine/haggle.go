@@ -18,6 +18,11 @@ import (
 const (
 	reputationFloor = -50
 	reputationCeil  = 50
+
+	// greedFloor is the minimum NPC Disposition.Greed that Trade Contacts
+	// tech (EffectTradeGreedReduction) can push a negotiation down to —
+	// NPCs never become perfectly generous, however much research is spent.
+	greedFloor = 5
 )
 
 // HaggleResult carries a negotiation's current state alongside the player's
@@ -73,6 +78,13 @@ func (e *Engine) startHaggle(ctx context.Context, c StartHaggle) (HaggleResult, 
 	}
 
 	disp := haggle.NewDisposition(node.DevelopmentLevel, p.ReputationAt(p.NodeID))
+	research, err := e.repo.GetResearch(ctx)
+	if err != nil {
+		return HaggleResult{}, err
+	}
+	if disp.Greed -= research.TradeGreedReduction; disp.Greed < greedFloor {
+		disp.Greed = greedFloor
+	}
 	r := rng.New(haggleSeed(game.ID, p.NodeID, c.Commodity, c.Buying, 0))
 	session := haggle.Start(p.NodeID, c.Commodity, c.Buying, price, c.Quantity, disp, r)
 

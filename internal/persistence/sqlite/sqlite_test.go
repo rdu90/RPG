@@ -11,6 +11,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
+	"github.com/rdu90/RPG/internal/engine/techtree"
 	"github.com/rdu90/RPG/internal/engine/turn"
 )
 
@@ -250,5 +251,65 @@ func TestColonyRoundTrip(t *testing.T) {
 	}
 	if got.Population != 500 {
 		t.Fatalf("expected updated population 500, got %d", got.Population)
+	}
+}
+
+func TestResearchRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// A save with nothing researched yet has no row: GetResearch must
+	// still return a usable zero value rather than erroring.
+	empty, err := s.GetResearch(ctx)
+	if err != nil {
+		t.Fatalf("get research before any save: %v", err)
+	}
+	if empty.Active != "" || len(empty.Unlocked) != 0 {
+		t.Fatalf("expected empty research state, got %+v", empty)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	r := techtree.Research{
+		Active:              "cargo-2",
+		Progress:            15,
+		LastTickAt:          now,
+		Unlocked:            map[techtree.TechID]bool{"cargo-1": true, "trade-1": true},
+		RateBonus:           1,
+		TradeGreedReduction: 2,
+	}
+	if err := s.SaveResearch(ctx, r); err != nil {
+		t.Fatalf("save research: %v", err)
+	}
+
+	got, err := s.GetResearch(ctx)
+	if err != nil {
+		t.Fatalf("get research: %v", err)
+	}
+	if got.Active != r.Active || got.Progress != r.Progress || !got.LastTickAt.Equal(r.LastTickAt) ||
+		got.RateBonus != r.RateBonus || got.TradeGreedReduction != r.TradeGreedReduction {
+		t.Fatalf("research scalar fields mismatch: got %+v, want %+v", got, r)
+	}
+	if !reflect.DeepEqual(got.Unlocked, r.Unlocked) {
+		t.Fatalf("unlocked mismatch: got %+v, want %+v", got.Unlocked, r.Unlocked)
+	}
+
+	// SaveResearch must update in place (singleton row) and fully replace
+	// the unlocked set, including removing entries — mirroring
+	// SavePlayer's cargo/reputation/discovered semantics.
+	r.Active = "logistics-1"
+	r.Progress = 3
+	r.Unlocked = map[techtree.TechID]bool{"cargo-1": true}
+	if err := s.SaveResearch(ctx, r); err != nil {
+		t.Fatalf("re-save research: %v", err)
+	}
+	got, err = s.GetResearch(ctx)
+	if err != nil {
+		t.Fatalf("get research after re-save: %v", err)
+	}
+	if got.Active != "logistics-1" || got.Progress != 3 {
+		t.Fatalf("expected updated research state, got %+v", got)
+	}
+	if !reflect.DeepEqual(got.Unlocked, map[techtree.TechID]bool{"cargo-1": true}) {
+		t.Fatalf("expected unlocked fully replaced, got %+v", got.Unlocked)
 	}
 }

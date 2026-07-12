@@ -13,6 +13,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/ports"
+	"github.com/rdu90/RPG/internal/engine/techtree"
 )
 
 // GetGame returns the current save's identity record.
@@ -123,6 +124,40 @@ func ColonizeCost(developmentLevel int) int { return engine.ColonizeCost(develop
 // ColonizeTurnCost is the turn price of founding a colony, independent of
 // its credit cost.
 const ColonizeTurnCost = engine.ColonizeTurnCost
+
+// GetTechTree returns the fixed tech catalog alongside the player's current
+// research progress.
+type GetTechTree = engine.GetTechTree
+
+// StartResearchResult is the result of a StartResearch command: the
+// player's research state after starting (or switching to) a project,
+// alongside the player's current state.
+type StartResearchResult = engine.StartResearchResult
+
+// TechTreeStatus is the result of GetTechTree: the fixed tech catalog
+// alongside the player's current research progress and state.
+type TechTreeStatus = engine.TechTreeStatus
+
+// Tech, TechID, EffectKind, and Research describe the tech tree returned by
+// GetTechTree: a fixed catalog of research nodes and the player's progress
+// through them.
+type (
+	Tech       = techtree.Tech
+	TechID     = techtree.TechID
+	EffectKind = techtree.EffectKind
+	Research   = techtree.Research
+)
+
+// The possible values of EffectKind.
+const (
+	EffectCargoCapacity       = techtree.EffectCargoCapacity
+	EffectTurnMax             = techtree.EffectTurnMax
+	EffectTradeGreedReduction = techtree.EffectTradeGreedReduction
+	EffectResearchRate        = techtree.EffectResearchRate
+)
+
+// FindTech looks up a tech definition by ID.
+func FindTech(id TechID) (Tech, bool) { return techtree.Find(id) }
 
 // Anomaly is a secret a system may hide, discoverable by scouting it or
 // flying there.

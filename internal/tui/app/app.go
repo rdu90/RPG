@@ -40,6 +40,7 @@ const (
 	stateHaggle
 	stateColonize
 	stateColonies
+	stateTechTree
 	stateError
 )
 
@@ -97,6 +98,16 @@ type coloniesLoadedMsg struct {
 	err      error
 }
 
+type techTreeLoadedMsg struct {
+	status query.TechTreeStatus
+	err    error
+}
+
+type researchStartedMsg struct {
+	result query.StartResearchResult
+	err    error
+}
+
 type marketLoadedMsg struct {
 	prices []query.Price
 	err    error
@@ -141,6 +152,10 @@ type Model struct {
 	colonizeCursor int
 	colonizeErr    error
 	colonies       []query.Colony
+
+	research    query.Research
+	techCatalog []query.Tech
+	techCursor  int
 
 	market      []query.Price
 	tradeCursor int
@@ -273,6 +288,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.colonies = msg.colonies
 		m.state = stateColonies
 		return m, nil
+	case techTreeLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.techCatalog = msg.status.Catalog
+		m.research = msg.status.Research
+		m.player = msg.status.Player
+		m.techCursor = 0
+		m.state = stateTechTree
+		return m, nil
+	case researchStartedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.research = msg.result.Research
+		m.player = msg.result.Player
+		m.state = stateTechTree
+		return m, nil
 	case marketLoadedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -315,6 +352,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleColonizeKey(msg)
 	case stateColonies:
 		return m.handleColoniesKey(msg)
+	case stateTechTree:
+		return m.handleTechTreeKey(msg)
 	case stateError:
 		switch msg.String() {
 		case "esc":
@@ -450,6 +489,9 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		m.state = stateWorking
 		return m, m.loadColoniesCmd()
+	case "r":
+		m.state = stateWorking
+		return m, m.loadTechTreeCmd()
 	case "q":
 		return m, tea.Quit
 	}
@@ -484,6 +526,35 @@ func (m Model) handleColoniesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "enter":
 		m.state = stateMap
 		return m, nil
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleTechTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = stateMap
+		return m, nil
+	case "up", "k":
+		if m.techCursor > 0 {
+			m.techCursor--
+		}
+	case "down", "j":
+		if m.techCursor < len(m.techCatalog)-1 {
+			m.techCursor++
+		}
+	case "enter":
+		if len(m.techCatalog) == 0 {
+			return m, nil
+		}
+		tech := m.techCatalog[m.techCursor]
+		if tech.ID == m.research.Active || !m.research.Available(tech.ID) {
+			return m, nil
+		}
+		m.state = stateWorking
+		return m, m.startResearchCmd(tech.ID)
 	case "q":
 		return m, tea.Quit
 	}
@@ -741,6 +812,28 @@ func (m Model) loadColoniesCmd() tea.Cmd {
 	}
 }
 
+func (m Model) loadTechTreeCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Query(context.Background(), query.GetTechTree{})
+		if err != nil {
+			return techTreeLoadedMsg{err: err}
+		}
+		return techTreeLoadedMsg{status: res.(query.TechTreeStatus)}
+	}
+}
+
+func (m Model) startResearchCmd(tech query.TechID) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.StartResearch{Tech: tech})
+		if err != nil {
+			return researchStartedMsg{err: err}
+		}
+		return researchStartedMsg{result: res.(query.StartResearchResult)}
+	}
+}
+
 // describeScoutResult renders a one-line report of what a scout found (or
 // didn't) at the surveyed system.
 func describeScoutResult(res query.ScoutResult) string {
@@ -826,6 +919,8 @@ func (m Model) View() string {
 		return m.viewColonize()
 	case stateColonies:
 		return m.viewColonies()
+	case stateTechTree:
+		return m.viewTechTree()
 	case stateError:
 		return m.viewError()
 	}
@@ -925,7 +1020,7 @@ func (m Model) viewMap() string {
 		s += "\n" + style.Faint.Render(m.scoutReport) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, esc to menu, q to quit")
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, esc to menu, q to quit")
 	return s
 }
 
@@ -966,6 +1061,42 @@ func (m Model) viewColonies() string {
 		s += fmt.Sprintf("  %-15s population %5d/%-5d producing %s\n", n.Name, col.Population, cap, c.Name)
 	}
 	s += "\n" + style.Faint.Render("esc to return to the map")
+	return s
+}
+
+func (m Model) viewTechTree() string {
+	s := style.Title.Render("Research") + "\n\n"
+
+	if m.research.Active != "" {
+		if tech, ok := query.FindTech(m.research.Active); ok {
+			s += fmt.Sprintf("Researching: %s (%d/%d points, %d pts/tick)\n\n",
+				tech.Name, m.research.Progress, tech.Cost, m.research.RatePerTick())
+		}
+	} else {
+		s += style.Faint.Render("No active research project.") + "\n\n"
+	}
+	s += fmt.Sprintf("Research rate: %d pts/tick   Trade savvy: -%d NPC greed\n\n",
+		m.research.RatePerTick(), m.research.TradeGreedReduction)
+
+	for i, t := range m.techCatalog {
+		status := "locked"
+		switch {
+		case m.research.HasUnlocked(t.ID):
+			status = "unlocked"
+		case t.ID == m.research.Active:
+			status = "researching"
+		case m.research.Available(t.ID):
+			status = "available"
+		}
+		line := fmt.Sprintf("%-24s tier %d   cost %-4d   [%s]", t.Name, t.Tier, t.Cost, status)
+		if i == m.techCursor {
+			s += style.Selected.Render("> "+line) + "\n"
+		} else {
+			s += "  " + line + "\n"
+		}
+	}
+
+	s += "\n" + style.Faint.Render("up/down select, enter to research (switching projects resets progress), esc back")
 	return s
 }
 

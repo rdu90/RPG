@@ -12,6 +12,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/ports"
+	"github.com/rdu90/RPG/internal/engine/techtree"
 	"github.com/rdu90/RPG/internal/rng"
 )
 
@@ -26,10 +27,15 @@ type fakeRepo struct {
 	market   map[galaxy.NodeID][]economy.Price
 	player   player.Player
 	colonies map[galaxy.NodeID]colony.Colony
+	research techtree.Research
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{market: map[galaxy.NodeID][]economy.Price{}, colonies: map[galaxy.NodeID]colony.Colony{}}
+	return &fakeRepo{
+		market:   map[galaxy.NodeID][]economy.Price{},
+		colonies: map[galaxy.NodeID]colony.Colony{},
+		research: techtree.Research{Unlocked: map[techtree.TechID]bool{}},
+	}
 }
 
 func (r *fakeRepo) CreateGame(_ context.Context, name string) (ports.Game, error) {
@@ -83,6 +89,13 @@ func (r *fakeRepo) GetColonies(_ context.Context) ([]colony.Colony, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+func (r *fakeRepo) GetResearch(_ context.Context) (techtree.Research, error) { return r.research, nil }
+
+func (r *fakeRepo) SaveResearch(_ context.Context, res techtree.Research) error {
+	r.research = res
+	return nil
 }
 
 func newTestEngine(t *testing.T) (*Engine, *fakeRepo) {
@@ -785,6 +798,158 @@ func TestGetColoniesReturnsAllColoniesTicked(t *testing.T) {
 	cols := res.([]colony.Colony)
 	if len(cols) != 2 {
 		t.Fatalf("expected 2 colonies, got %d", len(cols))
+	}
+}
+
+func TestStartResearchBeginsProject(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res, err := e.Execute(context.Background(), StartResearch{Tech: "cargo-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(StartResearchResult)
+	if result.Research.Active != "cargo-1" {
+		t.Fatalf("expected active tech cargo-1, got %s", result.Research.Active)
+	}
+	if result.Research.Progress != 0 {
+		t.Fatalf("expected fresh progress 0, got %d", result.Research.Progress)
+	}
+	if repo.research.Active != "cargo-1" {
+		t.Fatal("expected research to be persisted")
+	}
+}
+
+func TestStartResearchRejectsUnknownTech(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := e.Execute(context.Background(), StartResearch{Tech: "warp-drive"}); err == nil {
+		t.Fatal("expected error starting an unknown tech")
+	}
+}
+
+func TestStartResearchRejectsUnavailableTech(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// cargo-2 requires cargo-1, which hasn't been researched yet.
+	if _, err := e.Execute(context.Background(), StartResearch{Tech: "cargo-2"}); err == nil {
+		t.Fatal("expected error starting a tech whose prerequisite isn't unlocked")
+	}
+}
+
+func TestGetTechTreeReturnsCatalogAndProgress(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res, err := e.Query(context.Background(), GetTechTree{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	status := res.(TechTreeStatus)
+	if len(status.Catalog) != len(techtree.Catalog) {
+		t.Fatalf("expected full catalog of %d techs, got %d", len(techtree.Catalog), len(status.Catalog))
+	}
+	if status.Research.Active != "" {
+		t.Fatalf("expected no active research yet, got %s", status.Research.Active)
+	}
+}
+
+func TestGetTechTreeTicksProgressAndAppliesCargoCapacityEffect(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cargoBefore := repo.player.CargoCapacity
+
+	if _, err := e.Execute(context.Background(), StartResearch{Tech: "cargo-1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Force the research clock far into the past so ticks have elapsed
+	// well past cargo-1's cost (40 points at 4/tick = 10 ticks).
+	repo.research.LastTickAt = repo.research.LastTickAt.Add(-time.Hour)
+
+	res, err := e.Query(context.Background(), GetTechTree{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	status := res.(TechTreeStatus)
+	if !status.Research.HasUnlocked("cargo-1") {
+		t.Fatal("expected cargo-1 to have completed")
+	}
+	if status.Research.Active != "" {
+		t.Fatalf("expected no active project after completion, got %s", status.Research.Active)
+	}
+
+	wantCapacity := cargoBefore + 5 // cargo-1's magnitude
+	if status.Player.CargoCapacity != wantCapacity {
+		t.Fatalf("expected cargo capacity %d, got %d", wantCapacity, status.Player.CargoCapacity)
+	}
+	if repo.player.CargoCapacity != wantCapacity {
+		t.Fatal("expected the cargo capacity effect to be persisted on the player")
+	}
+	if !repo.research.HasUnlocked("cargo-1") {
+		t.Fatal("expected the completed research to be persisted")
+	}
+}
+
+func TestGetTechTreeAppliesTurnMaxEffect(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	turnsMaxBefore := repo.player.Turns.Max
+
+	if _, err := e.Execute(context.Background(), StartResearch{Tech: "logistics-1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.research.LastTickAt = repo.research.LastTickAt.Add(-time.Hour)
+
+	res, err := e.Query(context.Background(), GetTechTree{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	status := res.(TechTreeStatus)
+	wantMax := turnsMaxBefore + 3 // logistics-1's magnitude
+	if status.Player.Turns.Max != wantMax {
+		t.Fatalf("expected turns max %d, got %d", wantMax, status.Player.Turns.Max)
+	}
+}
+
+func TestStartHaggleAppliesTradeGreedReduction(t *testing.T) {
+	baseline, _ := newTestEngine(t)
+	if _, err := baseline.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := baseline.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	baselineOffer := res.(HaggleResult).Session.NPCOffer
+
+	discounted, discountedRepo := newTestEngine(t)
+	if _, err := discounted.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	discountedRepo.research.TradeGreedReduction = 50
+	res, err = discounted.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	discountedOffer := res.(HaggleResult).Session.NPCOffer
+
+	if discountedOffer >= baselineOffer {
+		t.Fatalf("expected trade greed reduction to improve the buying offer: baseline=%d discounted=%d",
+			baselineOffer, discountedOffer)
 	}
 }
 

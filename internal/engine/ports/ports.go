@@ -11,6 +11,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
+	"github.com/rdu90/RPG/internal/engine/techtree"
 )
 
 // GameID identifies a save game.
@@ -62,6 +63,13 @@ type ColonyRepository interface {
 	GetColonies(ctx context.Context) ([]colony.Colony, error)
 }
 
+// ResearchRepository persists and retrieves the player's tech-tree research
+// progress: a singleton row per save, the same shape as PlayerRepository.
+type ResearchRepository interface {
+	GetResearch(ctx context.Context) (techtree.Research, error)
+	SaveResearch(ctx context.Context, r techtree.Research) error
+}
+
 // Repository is the full set of repositories a persistence backend must
 // implement. A save is a single backend implementing all of them.
 type Repository interface {
@@ -70,4 +78,5 @@ type Repository interface {
 	MarketRepository
 	PlayerRepository
 	ColonyRepository
+	ResearchRepository
 }

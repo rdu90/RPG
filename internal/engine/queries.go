@@ -35,3 +35,9 @@ func (GetColony) isQuery() {}
 type GetColonies struct{}
 
 func (GetColonies) isQuery() {}
+
+// GetTechTree returns the fixed tech catalog alongside the player's current
+// research progress.
+type GetTechTree struct{}
+
+func (GetTechTree) isQuery() {}
