@@ -87,6 +87,12 @@ The critical rule: `tui` only ever talks to `transport` (never `internal/engine`
 4. Don't start networking/auth work before M9, and don't build a generic plugin/ECS framework before M10 — the package boundaries above already buy that optionality without paying for it now.
 5. Adopt versioned SQL migrations starting at M0, even though it's single-player-only through M8 — retrofitting migration discipline after 8 milestones of organic schema growth is much more painful than starting with it.
 
+## Tooling
+
+`make help` lists every available target (build/run/test/test-race/cover/cover-html/fmt/vet/lint/tidy/vuln/check/release/clean/new-migration/db-shell/saves). `golangci-lint` and `govulncheck` are pinned as `go.mod` tool directives (`go get -tool ...`), so `go tool <name>` always runs the exact pinned version — no global install, no version drift. `scripts/` holds small helpers a Makefile one-liner isn't enough for: `new_migration.sh` scaffolds the next numbered goose migration (matches `internal/persistence/migrations` naming exactly), `db_shell.sh` opens a `sqlite3` shell directly on a save file for manual inspection.
+
+**After every milestone, before moving to the next one:** spend a few minutes checking whether the dev loop just got harder in some way — a manual step that was repeated more than once, a check that had to be done by hand, a new category of file (migrations, generated content, etc.) with no scaffolding. If so, add a Makefile target or a `scripts/` helper for it before starting the next milestone. This is cheap when done immediately after the friction is fresh and expensive to reconstruct later — treat it as part of the milestone's definition of done, not a separate cleanup task.
+
 ## Critical first files (create in this order)
 
 - `go.mod` — module init (module path `github.com/rdu90/RPG`, matching the `origin` remote)
@@ -99,5 +105,5 @@ The critical rule: `tui` only ever talks to `transport` (never `internal/engine`
 
 - M0: `go build ./...` succeeds; running the binary opens/creates a save DB and shows a menu.
 - M1 (the real gate): play through the loop manually — start a new game, pan/select nodes on the galaxy map, fly several hops, observe price differences between systems, execute buy/sell trades, quit and relaunch to confirm the save round-trips correctly via the SQLite file.
-- Each subsequent milestone: add engine-level unit tests for its package (e.g. `engine/haggle`, `engine/combat` resolution is pure and deterministic given a seed, so it's straightforward to test), then manually drive the corresponding new TUI screen end-to-end before considering the milestone done.
+- Each subsequent milestone: add engine-level unit tests for its package (e.g. `engine/haggle`, `engine/combat` resolution is pure and deterministic given a seed, so it's straightforward to test), then manually drive the corresponding new TUI screen end-to-end before considering the milestone done. Then do the Tooling check above before starting the next milestone.
 - Before M9, confirm the "no rewrite" bet directly: write `transport/grpc` against the exact same `Client` interface `transport/local` implements, with no changes required in `internal/engine` or `internal/tui`.

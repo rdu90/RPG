@@ -9,3 +9,12 @@ import "github.com/rdu90/RPG/internal/engine"
 
 // CreateGame starts a new save with the given name.
 type CreateGame = engine.CreateGame
+
+// Move flies the player's ship to an adjacent system.
+type Move = engine.Move
+
+// Buy purchases cargo at the player's current system.
+type Buy = engine.Buy
+
+// Sell sells cargo at the player's current system.
+type Sell = engine.Sell

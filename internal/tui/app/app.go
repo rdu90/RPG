@@ -1,13 +1,15 @@
-// Package app is the bubbletea root model: a title screen that can create
-// or load a save, proving the full tui -> transport -> engine -> ports ->
-// persistence round trip end to end. Gameplay screens land in later
-// milestones; this package only ever imports internal/transport, never
-// internal/engine directly.
+// Package app is the bubbletea root model: a title screen that creates or
+// loads a save, then drives the galaxy map and trade screens that make up
+// the M1 core loop (fly between systems, buy/sell at static prices). This
+// package only ever imports internal/transport, never internal/engine
+// directly.
 package app
 
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,18 +35,44 @@ const (
 	stateNewGameInput
 	stateLoadList
 	stateWorking
-	stateGameReady
+	stateMap
+	stateTrade
 	stateError
 )
 
+type tradeMode int
+
+const (
+	tradeIdle tradeMode = iota
+	tradeBuying
+	tradeSelling
+)
+
 type gameReadyMsg struct {
-	game query.Game
-	err  error
+	client *local.Client
+	game   query.Game
+	err    error
 }
 
 type savesLoadedMsg struct {
 	saves []string
 	err   error
+}
+
+type worldLoadedMsg struct {
+	galaxy query.Galaxy
+	player query.Player
+	err    error
+}
+
+type playerUpdatedMsg struct {
+	player query.Player
+	err    error
+}
+
+type marketLoadedMsg struct {
+	prices []query.Price
+	err    error
 }
 
 // Model is the root bubbletea model.
@@ -53,17 +81,31 @@ type Model struct {
 	listSaves ListSaves
 
 	state state
+	// afterWork is where a playerUpdatedMsg should land: stateMap after a
+	// move, stateTrade after a buy/sell.
+	afterWork state
 
 	menuItems  []string
 	menuCursor int
 
 	nameInput textinput.Model
+	qtyInput  textinput.Model
 
 	saves      []string
 	loadCursor int
 
-	game query.Game
-	err  error
+	client *local.Client
+	game   query.Game
+	err    error
+
+	galaxy    query.Galaxy
+	player    query.Player
+	mapCursor int
+
+	market      []query.Price
+	tradeCursor int
+	tradeMode   tradeMode
+	tradeErr    error
 }
 
 // New builds the root model.
@@ -73,12 +115,17 @@ func New(openSave OpenSave, listSaves ListSaves) Model {
 	ti.CharLimit = 40
 	ti.Focus()
 
+	qty := textinput.New()
+	qty.Placeholder = "quantity"
+	qty.CharLimit = 6
+
 	return Model{
 		openSave:  openSave,
 		listSaves: listSaves,
 		state:     stateMenu,
 		menuItems: []string{"New Game", "Load Game", "Quit"},
 		nameInput: ti,
+		qtyInput:  qty,
 	}
 }
 
@@ -109,8 +156,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateError
 			return m, nil
 		}
+		m.client = msg.client
 		m.game = msg.game
-		m.state = stateGameReady
+		m.state = stateWorking
+		return m, loadWorldCmd(msg.client)
+	case worldLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.galaxy = msg.galaxy
+		m.player = msg.player
+		m.mapCursor = 0
+		m.state = stateMap
+		return m, nil
+	case playerUpdatedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.player
+		m.state = m.afterWork
+		return m, nil
+	case marketLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.market = msg.prices
+		m.tradeCursor = 0
+		m.state = stateTrade
 		return m, nil
 	}
 	return m, nil
@@ -124,7 +202,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNewGameKey(msg)
 	case stateLoadList:
 		return m.handleLoadListKey(msg)
-	case stateGameReady, stateError:
+	case stateMap:
+		return m.handleMapKey(msg)
+	case stateTrade:
+		return m.handleTradeKey(msg)
+	case stateError:
 		switch msg.String() {
 		case "esc":
 			m.state = stateMenu
@@ -207,6 +289,101 @@ func (m Model) handleLoadListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	neighbors := m.galaxy.Neighbors(m.player.NodeID)
+	switch msg.String() {
+	case "esc":
+		m.state = stateMenu
+		return m, nil
+	case "up", "k":
+		if m.mapCursor > 0 {
+			m.mapCursor--
+		}
+	case "down", "j":
+		if m.mapCursor < len(neighbors)-1 {
+			m.mapCursor++
+		}
+	case "enter":
+		if len(neighbors) == 0 {
+			return m, nil
+		}
+		to := neighbors[m.mapCursor].To
+		m.afterWork = stateMap
+		m.state = stateWorking
+		return m, m.moveCmd(to)
+	case "t":
+		m.state = stateWorking
+		return m, m.loadMarketCmd()
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleTradeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.tradeMode != tradeIdle {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.tradeMode = tradeIdle
+			m.tradeErr = nil
+			m.qtyInput.SetValue("")
+			m.qtyInput.Blur()
+			return m, nil
+		case tea.KeyEnter:
+			qty, err := strconv.Atoi(strings.TrimSpace(m.qtyInput.Value()))
+			if err != nil || qty <= 0 {
+				m.tradeErr = fmt.Errorf("enter a positive whole number")
+				return m, nil
+			}
+			commodity := m.market[m.tradeCursor].CommodityID
+			buy := m.tradeMode == tradeBuying
+			m.tradeMode = tradeIdle
+			m.tradeErr = nil
+			m.qtyInput.SetValue("")
+			m.qtyInput.Blur()
+			m.afterWork = stateTrade
+			m.state = stateWorking
+			return m, m.tradeCmd(commodity, qty, buy)
+		}
+		var cmd tea.Cmd
+		m.qtyInput, cmd = m.qtyInput.Update(msg)
+		return m, cmd
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.state = stateMap
+		return m, nil
+	case "up", "k":
+		if m.tradeCursor > 0 {
+			m.tradeCursor--
+		}
+	case "down", "j":
+		if m.tradeCursor < len(m.market)-1 {
+			m.tradeCursor++
+		}
+	case "b":
+		if len(m.market) == 0 {
+			return m, nil
+		}
+		m.tradeMode = tradeBuying
+		m.tradeErr = nil
+		m.qtyInput.SetValue("")
+		m.qtyInput.Focus()
+	case "s":
+		if len(m.market) == 0 {
+			return m, nil
+		}
+		m.tradeMode = tradeSelling
+		m.tradeErr = nil
+		m.qtyInput.SetValue("")
+		m.qtyInput.Focus()
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
 func (m Model) loadSavesCmd() tea.Cmd {
 	listSaves := m.listSaves
 	return func() tea.Msg {
@@ -226,7 +403,7 @@ func (m Model) createGameCmd(name string) tea.Cmd {
 		if err != nil {
 			return gameReadyMsg{err: err}
 		}
-		return gameReadyMsg{game: res.(query.Game)}
+		return gameReadyMsg{client: client, game: res.(query.Game)}
 	}
 }
 
@@ -241,7 +418,62 @@ func (m Model) loadGameCmd(name string) tea.Cmd {
 		if err != nil {
 			return gameReadyMsg{err: err}
 		}
-		return gameReadyMsg{game: res.(query.Game)}
+		return gameReadyMsg{client: client, game: res.(query.Game)}
+	}
+}
+
+func loadWorldCmd(client *local.Client) tea.Cmd {
+	return func() tea.Msg {
+		gRes, err := client.Query(context.Background(), query.GetGalaxy{})
+		if err != nil {
+			return worldLoadedMsg{err: err}
+		}
+		pRes, err := client.Query(context.Background(), query.GetPlayer{})
+		if err != nil {
+			return worldLoadedMsg{err: err}
+		}
+		return worldLoadedMsg{galaxy: gRes.(query.Galaxy), player: pRes.(query.Player)}
+	}
+}
+
+func (m Model) moveCmd(to query.NodeID) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.Move{To: to})
+		if err != nil {
+			return playerUpdatedMsg{err: err}
+		}
+		return playerUpdatedMsg{player: res.(query.Player)}
+	}
+}
+
+func (m Model) loadMarketCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Query(context.Background(), query.GetMarket{})
+		if err != nil {
+			return marketLoadedMsg{err: err}
+		}
+		return marketLoadedMsg{prices: res.([]query.Price)}
+	}
+}
+
+func (m Model) tradeCmd(commodity query.CommodityID, qty int, buy bool) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		var (
+			res any
+			err error
+		)
+		if buy {
+			res, err = client.Execute(context.Background(), command.Buy{Commodity: commodity, Quantity: qty})
+		} else {
+			res, err = client.Execute(context.Background(), command.Sell{Commodity: commodity, Quantity: qty})
+		}
+		if err != nil {
+			return playerUpdatedMsg{err: err}
+		}
+		return playerUpdatedMsg{player: res.(query.Player)}
 	}
 }
 
@@ -256,8 +488,10 @@ func (m Model) View() string {
 		return m.viewLoadList()
 	case stateWorking:
 		return style.Title.Render("RPG") + "\n\nWorking...\n"
-	case stateGameReady:
-		return m.viewGameReady()
+	case stateMap:
+		return m.viewMap()
+	case stateTrade:
+		return m.viewTrade()
 	case stateError:
 		return m.viewError()
 	}
@@ -300,13 +534,68 @@ func (m Model) viewLoadList() string {
 	return s
 }
 
-func (m Model) viewGameReady() string {
-	s := style.Title.Render("RPG") + "\n\n"
-	s += fmt.Sprintf("Save %q ready.\n", m.game.Name)
-	s += fmt.Sprintf("Created:  %s\n", m.game.CreatedAt.Format("2006-01-02 15:04:05"))
-	s += fmt.Sprintf("Updated:  %s\n\n", m.game.UpdatedAt.Format("2006-01-02 15:04:05"))
-	s += style.Faint.Render("gameplay lands in a later milestone") + "\n\n"
-	s += style.Faint.Render("esc to return to menu, q to quit")
+func (m Model) viewMap() string {
+	s := style.Title.Render("RPG — "+m.game.Name) + "\n\n"
+
+	cur, _ := m.galaxy.Node(m.player.NodeID)
+	s += fmt.Sprintf("System: %s (dev %d)   Credits: %d cr   Turns: %d/%d   Cargo: %d/%d\n\n",
+		cur.Name, cur.DevelopmentLevel, m.player.Credits,
+		m.player.Turns.Remaining, m.player.Turns.Max,
+		m.player.CargoUsed(), m.player.CargoCapacity)
+
+	neighbors := m.galaxy.Neighbors(m.player.NodeID)
+	var target query.NodeID
+	if len(neighbors) > 0 {
+		target = neighbors[m.mapCursor].To
+	}
+	s += renderStarfield(m.galaxy, m.player.NodeID, target) + "\n"
+
+	s += style.Faint.Render("Warp lanes from here:") + "\n"
+	if len(neighbors) == 0 {
+		s += style.Faint.Render("  (no warp lanes connect this system!)") + "\n"
+	}
+	for i, e := range neighbors {
+		n, _ := m.galaxy.Node(e.To)
+		line := fmt.Sprintf("%s (%d turn%s, dev %d)", n.Name, e.TurnCost, plural(e.TurnCost), n.DevelopmentLevel)
+		if i == m.mapCursor {
+			s += style.Selected.Render("> "+line) + "\n"
+		} else {
+			s += "  " + line + "\n"
+		}
+	}
+
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, t to trade, esc to menu, q to quit")
+	return s
+}
+
+func (m Model) viewTrade() string {
+	cur, _ := m.galaxy.Node(m.player.NodeID)
+	s := style.Title.Render("Trade — "+cur.Name) + "\n\n"
+	s += fmt.Sprintf("Credits: %d cr   Cargo: %d/%d\n\n", m.player.Credits, m.player.CargoUsed(), m.player.CargoCapacity)
+
+	for i, price := range m.market {
+		c, _ := query.FindCommodity(price.CommodityID)
+		owned := m.player.Cargo[price.CommodityID]
+		line := fmt.Sprintf("%-20s [%-8s] %5d cr   owned: %d", c.Name, c.Category, price.Price, owned)
+		if i == m.tradeCursor {
+			s += style.Selected.Render("> "+line) + "\n"
+		} else {
+			s += "  " + line + "\n"
+		}
+	}
+
+	if m.tradeMode != tradeIdle {
+		verb := "Buy"
+		if m.tradeMode == tradeSelling {
+			verb = "Sell"
+		}
+		s += fmt.Sprintf("\n%s quantity: %s\n", verb, m.qtyInput.View())
+	}
+	if m.tradeErr != nil {
+		s += "\n" + style.ErrorText.Render(m.tradeErr.Error()) + "\n"
+	}
+
+	s += "\n" + style.Faint.Render("up/down select, b buy, s sell, esc back")
 	return s
 }
 
@@ -315,4 +604,67 @@ func (m Model) viewError() string {
 	s += style.ErrorText.Render(fmt.Sprintf("error: %v", m.err)) + "\n\n"
 	s += style.Faint.Render("esc to return to menu, q to quit")
 	return s
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+const (
+	mapGridW = 50
+	mapGridH = 14
+)
+
+// renderStarfield draws the galaxy as a scaled ASCII scatter of coordinate
+// nodes: '@' marks the player's current system, '*' the currently
+// highlighted destination, '.' every other known system.
+func renderStarfield(g query.Galaxy, current, target query.NodeID) string {
+	if len(g.Nodes) == 0 {
+		return ""
+	}
+
+	minX, maxX := g.Nodes[0].X, g.Nodes[0].X
+	minY, maxY := g.Nodes[0].Y, g.Nodes[0].Y
+	for _, n := range g.Nodes {
+		minX, maxX = min(minX, n.X), max(maxX, n.X)
+		minY, maxY = min(minY, n.Y), max(maxY, n.Y)
+	}
+
+	grid := make([][]rune, mapGridH)
+	for i := range grid {
+		grid[i] = make([]rune, mapGridW)
+		for j := range grid[i] {
+			grid[i][j] = ' '
+		}
+	}
+
+	for _, n := range g.Nodes {
+		gx := scaleCoord(n.X, minX, maxX, mapGridW)
+		gy := scaleCoord(n.Y, minY, maxY, mapGridH)
+		ch := '.'
+		switch n.ID {
+		case current:
+			ch = '@'
+		case target:
+			ch = '*'
+		}
+		grid[gy][gx] = ch
+	}
+
+	var b strings.Builder
+	for _, row := range grid {
+		b.WriteString(string(row))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func scaleCoord(v, lo, hi, size int) int {
+	if hi == lo {
+		return size / 2
+	}
+	return (v - lo) * (size - 1) / (hi - lo)
 }

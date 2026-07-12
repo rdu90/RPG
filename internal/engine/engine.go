@@ -18,22 +18,28 @@ type Command interface{ isCommand() }
 // Query is anything that reads game state via Engine.Query.
 type Query interface{ isQuery() }
 
-// Engine is the composition root for game-logic subsystems. Subsystem
-// repositories are added here as milestones bring them online.
+// Engine is the composition root for game-logic subsystems, backed by a
+// single repository that persists every subsystem's state for one save.
 type Engine struct {
-	games ports.GameRepository
+	repo ports.Repository
 }
 
-// New builds an Engine over the given repositories.
-func New(games ports.GameRepository) *Engine {
-	return &Engine{games: games}
+// New builds an Engine over the given repository.
+func New(repo ports.Repository) *Engine {
+	return &Engine{repo: repo}
 }
 
 // Execute dispatches a Command to the subsystem that handles it.
 func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 	switch c := cmd.(type) {
 	case CreateGame:
-		return e.games.CreateGame(ctx, c.Name)
+		return e.createGame(ctx, c)
+	case Move:
+		return e.move(ctx, c)
+	case Buy:
+		return e.trade(ctx, c.Commodity, c.Quantity, true)
+	case Sell:
+		return e.trade(ctx, c.Commodity, c.Quantity, false)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}
@@ -43,7 +49,13 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 func (e *Engine) Query(ctx context.Context, q Query) (any, error) {
 	switch q.(type) {
 	case GetGame:
-		return e.games.GetGame(ctx)
+		return e.repo.GetGame(ctx)
+	case GetGalaxy:
+		return e.repo.GetGalaxy(ctx)
+	case GetPlayer:
+		return e.repo.GetPlayer(ctx)
+	case GetMarket:
+		return e.getMarket(ctx)
 	default:
 		return nil, fmt.Errorf("engine: unhandled query %T", q)
 	}
