@@ -13,8 +13,15 @@ type CreateGame = engine.CreateGame
 // Move flies the player's ship to an adjacent system.
 type Move = engine.Move
 
-// Buy purchases cargo at the player's current system.
-type Buy = engine.Buy
+// StartHaggle opens a negotiation over cargo at the player's current system.
+type StartHaggle = engine.StartHaggle
 
-// Sell sells cargo at the player's current system.
-type Sell = engine.Sell
+// HaggleOffer proposes a price per unit within an in-progress negotiation.
+type HaggleOffer = engine.HaggleOffer
+
+// HaggleWalkAway attempts to bluff a better price out of an in-progress
+// negotiation by threatening to leave.
+type HaggleWalkAway = engine.HaggleWalkAway
+
+// HaggleAccept accepts the NPC's current offer, closing the negotiation.
+type HaggleAccept = engine.HaggleAccept

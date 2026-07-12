@@ -3,6 +3,7 @@ package engine
 import (
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
+	"github.com/rdu90/RPG/internal/engine/haggle"
 )
 
 // CreateGame initializes a brand-new save with the given name, generating
@@ -21,18 +22,37 @@ type Move struct {
 
 func (Move) isCommand() {}
 
-// Buy purchases Quantity units of Commodity at the player's current system.
-type Buy struct {
+// StartHaggle opens a negotiation over Quantity units of Commodity at the
+// player's current system: Buying true negotiates a purchase, false a sale.
+type StartHaggle struct {
 	Commodity economy.CommodityID
 	Quantity  int
+	Buying    bool
 }
 
-func (Buy) isCommand() {}
+func (StartHaggle) isCommand() {}
 
-// Sell sells Quantity units of Commodity at the player's current system.
-type Sell struct {
-	Commodity economy.CommodityID
-	Quantity  int
+// HaggleOffer proposes Price (credits per unit) within an in-progress
+// negotiation.
+type HaggleOffer struct {
+	Session haggle.Session
+	Price   int
 }
 
-func (Sell) isCommand() {}
+func (HaggleOffer) isCommand() {}
+
+// HaggleWalkAway attempts to bluff a better price out of an in-progress
+// negotiation by threatening to leave.
+type HaggleWalkAway struct {
+	Session haggle.Session
+}
+
+func (HaggleWalkAway) isCommand() {}
+
+// HaggleAccept accepts the NPC's current offer, closing the negotiation and
+// executing the trade.
+type HaggleAccept struct {
+	Session haggle.Session
+}
+
+func (HaggleAccept) isCommand() {}

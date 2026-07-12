@@ -94,6 +94,8 @@ func TestPlayerRoundTrip(t *testing.T) {
 		CargoCapacity: 40,
 		Cargo:         map[economy.CommodityID]int{"food": 5, "weapons": 2},
 		Turns:         turn.New(100, 20*time.Second, now),
+		Reputation:    map[galaxy.NodeID]int{"sys-000": 5, "sys-001": -3},
+		Alignment:     player.Alignment{Legality: 0.4, Morality: -0.2},
 	}
 
 	if err := s.InitPlayer(ctx, p); err != nil {
@@ -114,12 +116,20 @@ func TestPlayerRoundTrip(t *testing.T) {
 		got.Turns.RefillEvery != p.Turns.RefillEvery || !got.Turns.LastRefillAt.Equal(p.Turns.LastRefillAt) {
 		t.Fatalf("turns mismatch: got %+v, want %+v", got.Turns, p.Turns)
 	}
+	if !reflect.DeepEqual(got.Reputation, p.Reputation) {
+		t.Fatalf("reputation mismatch: got %+v, want %+v", got.Reputation, p.Reputation)
+	}
+	if got.Alignment != p.Alignment {
+		t.Fatalf("alignment mismatch: got %+v, want %+v", got.Alignment, p.Alignment)
+	}
 
-	// SavePlayer must overwrite scalar fields and fully replace cargo
-	// (including removing entries, not just upserting them).
+	// SavePlayer must overwrite scalar fields and fully replace cargo and
+	// reputation (including removing entries, not just upserting them).
 	p.Credits = 250
 	p.NodeID = "sys-001"
 	p.Cargo = map[economy.CommodityID]int{"food": 1}
+	p.Reputation = map[galaxy.NodeID]int{"sys-001": 10}
+	p.Alignment = player.Alignment{Legality: -0.6, Morality: 0.1}
 	if err := s.SavePlayer(ctx, p); err != nil {
 		t.Fatalf("save player: %v", err)
 	}
@@ -133,5 +143,11 @@ func TestPlayerRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Cargo, map[economy.CommodityID]int{"food": 1}) {
 		t.Fatalf("expected cargo fully replaced, got %+v", got.Cargo)
+	}
+	if !reflect.DeepEqual(got.Reputation, map[galaxy.NodeID]int{"sys-001": 10}) {
+		t.Fatalf("expected reputation fully replaced, got %+v", got.Reputation)
+	}
+	if got.Alignment != p.Alignment {
+		t.Fatalf("expected updated alignment, got %+v", got.Alignment)
 	}
 }

@@ -36,10 +36,14 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 		return e.createGame(ctx, c)
 	case Move:
 		return e.move(ctx, c)
-	case Buy:
-		return e.trade(ctx, c.Commodity, c.Quantity, true)
-	case Sell:
-		return e.trade(ctx, c.Commodity, c.Quantity, false)
+	case StartHaggle:
+		return e.startHaggle(ctx, c)
+	case HaggleOffer:
+		return e.haggleOffer(ctx, c)
+	case HaggleWalkAway:
+		return e.haggleWalkAway(ctx, c)
+	case HaggleAccept:
+		return e.haggleAccept(ctx, c)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}

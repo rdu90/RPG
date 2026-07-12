@@ -37,6 +37,7 @@ const (
 	stateWorking
 	stateMap
 	stateTrade
+	stateHaggle
 	stateError
 )
 
@@ -75,6 +76,11 @@ type marketLoadedMsg struct {
 	err    error
 }
 
+type haggleUpdatedMsg struct {
+	result query.HaggleResult
+	err    error
+}
+
 // Model is the root bubbletea model.
 type Model struct {
 	openSave  OpenSave
@@ -88,8 +94,9 @@ type Model struct {
 	menuItems  []string
 	menuCursor int
 
-	nameInput textinput.Model
-	qtyInput  textinput.Model
+	nameInput  textinput.Model
+	qtyInput   textinput.Model
+	priceInput textinput.Model
 
 	saves      []string
 	loadCursor int
@@ -106,6 +113,10 @@ type Model struct {
 	tradeCursor int
 	tradeMode   tradeMode
 	tradeErr    error
+
+	haggleSession  query.HaggleSession
+	haggleOffering bool
+	haggleErr      error
 }
 
 // New builds the root model.
@@ -119,13 +130,18 @@ func New(openSave OpenSave, listSaves ListSaves) Model {
 	qty.Placeholder = "quantity"
 	qty.CharLimit = 6
 
+	price := textinput.New()
+	price.Placeholder = "price per unit"
+	price.CharLimit = 6
+
 	return Model{
-		openSave:  openSave,
-		listSaves: listSaves,
-		state:     stateMenu,
-		menuItems: []string{"New Game", "Load Game", "Quit"},
-		nameInput: ti,
-		qtyInput:  qty,
+		openSave:   openSave,
+		listSaves:  listSaves,
+		state:      stateMenu,
+		menuItems:  []string{"New Game", "Load Game", "Quit"},
+		nameInput:  ti,
+		qtyInput:   qty,
+		priceInput: price,
 	}
 }
 
@@ -190,6 +206,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tradeCursor = 0
 		m.state = stateTrade
 		return m, nil
+	case haggleUpdatedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.haggleSession = msg.result.Session
+		m.player = msg.result.Player
+		m.state = stateHaggle
+		return m, nil
 	}
 	return m, nil
 }
@@ -206,6 +232,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMapKey(msg)
 	case stateTrade:
 		return m.handleTradeKey(msg)
+	case stateHaggle:
+		return m.handleHaggleKey(msg)
 	case stateError:
 		switch msg.String() {
 		case "esc":
@@ -341,9 +369,8 @@ func (m Model) handleTradeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tradeErr = nil
 			m.qtyInput.SetValue("")
 			m.qtyInput.Blur()
-			m.afterWork = stateTrade
 			m.state = stateWorking
-			return m, m.tradeCmd(commodity, qty, buy)
+			return m, m.startHaggleCmd(commodity, qty, buy)
 		}
 		var cmd tea.Cmd
 		m.qtyInput, cmd = m.qtyInput.Update(msg)
@@ -378,6 +405,62 @@ func (m Model) handleTradeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tradeErr = nil
 		m.qtyInput.SetValue("")
 		m.qtyInput.Focus()
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleHaggleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.haggleSession.Outcome != query.HaggleInProgress {
+		switch msg.String() {
+		case "esc", "enter":
+			m.state = stateTrade
+			return m, nil
+		}
+		return m, nil
+	}
+
+	if m.haggleOffering {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.haggleOffering = false
+			m.haggleErr = nil
+			m.priceInput.SetValue("")
+			m.priceInput.Blur()
+			return m, nil
+		case tea.KeyEnter:
+			price, err := strconv.Atoi(strings.TrimSpace(m.priceInput.Value()))
+			if err != nil || price <= 0 {
+				m.haggleErr = fmt.Errorf("enter a positive whole number")
+				return m, nil
+			}
+			m.haggleOffering = false
+			m.haggleErr = nil
+			m.priceInput.SetValue("")
+			m.priceInput.Blur()
+			m.state = stateWorking
+			return m, m.haggleOfferCmd(price)
+		}
+		var cmd tea.Cmd
+		m.priceInput, cmd = m.priceInput.Update(msg)
+		return m, cmd
+	}
+
+	switch msg.String() {
+	case "o":
+		m.haggleOffering = true
+		m.haggleErr = nil
+		m.priceInput.SetValue("")
+		m.priceInput.Focus()
+	case "w":
+		m.state = stateWorking
+		return m, m.haggleWalkAwayCmd()
+	case "a":
+		m.state = stateWorking
+		return m, m.haggleAcceptCmd()
+	case "esc":
+		m.state = stateTrade
 	case "q":
 		return m, tea.Quit
 	}
@@ -458,22 +541,47 @@ func (m Model) loadMarketCmd() tea.Cmd {
 	}
 }
 
-func (m Model) tradeCmd(commodity query.CommodityID, qty int, buy bool) tea.Cmd {
+func (m Model) startHaggleCmd(commodity query.CommodityID, qty int, buy bool) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
-		var (
-			res any
-			err error
-		)
-		if buy {
-			res, err = client.Execute(context.Background(), command.Buy{Commodity: commodity, Quantity: qty})
-		} else {
-			res, err = client.Execute(context.Background(), command.Sell{Commodity: commodity, Quantity: qty})
-		}
+		res, err := client.Execute(context.Background(), command.StartHaggle{Commodity: commodity, Quantity: qty, Buying: buy})
 		if err != nil {
-			return playerUpdatedMsg{err: err}
+			return haggleUpdatedMsg{err: err}
 		}
-		return playerUpdatedMsg{player: res.(query.Player)}
+		return haggleUpdatedMsg{result: res.(query.HaggleResult)}
+	}
+}
+
+func (m Model) haggleOfferCmd(price int) tea.Cmd {
+	client, session := m.client, m.haggleSession
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.HaggleOffer{Session: session, Price: price})
+		if err != nil {
+			return haggleUpdatedMsg{err: err}
+		}
+		return haggleUpdatedMsg{result: res.(query.HaggleResult)}
+	}
+}
+
+func (m Model) haggleWalkAwayCmd() tea.Cmd {
+	client, session := m.client, m.haggleSession
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.HaggleWalkAway{Session: session})
+		if err != nil {
+			return haggleUpdatedMsg{err: err}
+		}
+		return haggleUpdatedMsg{result: res.(query.HaggleResult)}
+	}
+}
+
+func (m Model) haggleAcceptCmd() tea.Cmd {
+	client, session := m.client, m.haggleSession
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.HaggleAccept{Session: session})
+		if err != nil {
+			return haggleUpdatedMsg{err: err}
+		}
+		return haggleUpdatedMsg{result: res.(query.HaggleResult)}
 	}
 }
 
@@ -492,6 +600,8 @@ func (m Model) View() string {
 		return m.viewMap()
 	case stateTrade:
 		return m.viewTrade()
+	case stateHaggle:
+		return m.viewHaggle()
 	case stateError:
 		return m.viewError()
 	}
@@ -576,7 +686,7 @@ func (m Model) viewTrade() string {
 	for i, price := range m.market {
 		c, _ := query.FindCommodity(price.CommodityID)
 		owned := m.player.Cargo[price.CommodityID]
-		line := fmt.Sprintf("%-20s [%-8s] %5d cr   owned: %d", c.Name, c.Category, price.Price, owned)
+		line := fmt.Sprintf("%-20s [%-8s] ~%5d cr   owned: %d", c.Name, c.Category, price.Price, owned)
 		if i == m.tradeCursor {
 			s += style.Selected.Render("> "+line) + "\n"
 		} else {
@@ -595,8 +705,49 @@ func (m Model) viewTrade() string {
 		s += "\n" + style.ErrorText.Render(m.tradeErr.Error()) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, b buy, s sell, esc back")
+	s += "\n" + style.Faint.Render("prices shown are reference only, ~ marks the market rate\n")
+	s += style.Faint.Render("up/down select, b negotiate buying, s negotiate selling, esc back")
 	return s
+}
+
+func (m Model) viewHaggle() string {
+	s := m.haggleSession
+	c, _ := query.FindCommodity(s.Commodity)
+	verb := "Buying"
+	if !s.Buying {
+		verb = "Selling"
+	}
+
+	body := style.Title.Render(fmt.Sprintf("Haggling — %s %d x %s", verb, s.Quantity, c.Name)) + "\n\n"
+	body += fmt.Sprintf("Round %d   Credits: %d cr   Cargo: %d/%d\n\n",
+		s.Round, m.player.Credits, m.player.CargoUsed(), m.player.CargoCapacity)
+	body += fmt.Sprintf("Their offer: %d cr/unit   (%d cr total)\n\n", s.NPCOffer, s.NPCOffer*s.Quantity)
+
+	switch s.Outcome {
+	case query.HaggleAccepted:
+		body += style.Selected.Render(fmt.Sprintf("Deal! %d %s at %d cr/unit.", s.Quantity, c.Name, s.NPCOffer)) + "\n\n"
+		body += style.Faint.Render("enter/esc to continue trading")
+		return body
+	case query.HaggleRejected:
+		body += style.ErrorText.Render("They won't deal with you any further. The negotiation collapses.") + "\n\n"
+		body += style.Faint.Render("enter/esc to continue trading")
+		return body
+	}
+
+	if m.haggleOffering {
+		body += fmt.Sprintf("Your offer (cr/unit): %s\n", m.priceInput.View())
+		if m.haggleErr != nil {
+			body += style.ErrorText.Render(m.haggleErr.Error()) + "\n"
+		}
+		body += "\n" + style.Faint.Render("enter to submit, esc to cancel")
+		return body
+	}
+
+	if m.haggleErr != nil {
+		body += style.ErrorText.Render(m.haggleErr.Error()) + "\n\n"
+	}
+	body += style.Faint.Render("o to counter-offer, w to walk away (bluff), a to accept, esc to abandon, q to quit")
+	return body
 }
 
 func (m Model) viewError() string {

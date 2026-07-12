@@ -6,7 +6,7 @@ CMD_PKG    := ./cmd/rpg
 
 PLATFORMS  := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: all build run test test-verbose test-race cover cover-html fmt fmt-write vet lint tidy vuln check release clean help new-migration db-shell saves
+.PHONY: all build run test test-verbose test-race cover cover-html fmt fmt-write vet lint tidy vuln check release clean help new-migration db-shell db-query saves
 
 all: build
 
@@ -70,9 +70,14 @@ new-migration: ## Scaffold the next goose migration (make new-migration NAME=add
 	@test -n "$(NAME)" || (echo "usage: make new-migration NAME=<description>" >&2; exit 1)
 	./scripts/new_migration.sh "$(NAME)"
 
-db-shell: ## Open a sqlite3 shell on a save (make db-shell SAVE=name)
+db-shell: ## Open a sqlite3 shell on a save, requires the sqlite3 CLI (make db-shell SAVE=name)
 	@test -n "$(SAVE)" || (echo "usage: make db-shell SAVE=<save-name>" >&2; exit 1)
 	./scripts/db_shell.sh "$(SAVE)"
+
+db-query: ## Run one SQL statement against a save, no sqlite3 CLI required (make db-query SAVE=name SQL="select ...")
+	@test -n "$(SAVE)" || (echo "usage: make db-query SAVE=<save-name> SQL=<statement>" >&2; exit 1)
+	@test -n "$(SQL)" || (echo "usage: make db-query SAVE=<save-name> SQL=<statement>" >&2; exit 1)
+	./scripts/db_query.sh "$(SAVE)" "$(SQL)"
 
 saves: ## List local save files
 	@ls -la "$${XDG_DATA_HOME:-$$HOME/.local/share}/rpg" 2>/dev/null || echo "no saves yet"

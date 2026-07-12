@@ -7,6 +7,7 @@ import (
 
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
+	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/ports"
 )
@@ -157,73 +158,228 @@ func TestMoveRejectsNonAdjacentNode(t *testing.T) {
 	}
 }
 
-func TestBuyAndSellRoundTrip(t *testing.T) {
+func TestStartHaggleOpensAwayFromFairPrice(t *testing.T) {
 	e, repo := newTestEngine(t)
 	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	startingCreditsBefore := repo.player.Credits
 	price, ok := findPrice(repo.market[repo.player.NodeID], "food")
 	if !ok {
 		t.Fatal("expected food to be traded at the starting system")
 	}
 
-	res, err := e.Execute(context.Background(), Buy{Commodity: "food", Quantity: 5})
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	p := res.(player.Player)
-	if p.Cargo["food"] != 5 {
-		t.Fatalf("expected 5 food in cargo, got %d", p.Cargo["food"])
+	result := res.(HaggleResult)
+	if result.Session.Outcome != haggle.InProgress {
+		t.Fatalf("expected a fresh session to be in progress, got %v", result.Session.Outcome)
 	}
-	if p.Credits != startingCreditsBefore-price*5 {
-		t.Fatalf("expected credits %d, got %d", startingCreditsBefore-price*5, p.Credits)
+	if result.Session.NPCOffer <= price {
+		t.Fatalf("expected the NPC's opening buy offer to be above fair price %d, got %d", price, result.Session.NPCOffer)
 	}
+}
 
-	res, err = e.Execute(context.Background(), Sell{Commodity: "food", Quantity: 5})
+func TestHaggleAcceptRoundTrip(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	startingCredits := repo.player.Credits
+	node := repo.player.NodeID
+
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	p = res.(player.Player)
-	if _, has := p.Cargo["food"]; has {
-		t.Fatalf("expected food removed from cargo after selling all, got %v", p.Cargo)
+	session := res.(HaggleResult).Session
+
+	res, err = e.Execute(context.Background(), HaggleAccept{Session: session})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.Credits != startingCreditsBefore {
-		t.Fatalf("expected credits back to %d after round trip, got %d", startingCreditsBefore, p.Credits)
+	result := res.(HaggleResult)
+	if result.Session.Outcome != haggle.Accepted {
+		t.Fatalf("expected Accepted, got %v", result.Session.Outcome)
+	}
+	if result.Player.Cargo["food"] != 5 {
+		t.Fatalf("expected 5 food in cargo, got %d", result.Player.Cargo["food"])
+	}
+	wantCredits := startingCredits - result.Session.NPCOffer*5
+	if result.Player.Credits != wantCredits {
+		t.Fatalf("expected credits %d, got %d", wantCredits, result.Player.Credits)
+	}
+	if result.Player.ReputationAt(node) <= 0 {
+		t.Fatalf("expected a reputation gain at %s after a closed deal, got %d", node, result.Player.ReputationAt(node))
+	}
+
+	// Sell it back through a second negotiation.
+	res, err = e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session = res.(HaggleResult).Session
+
+	res, err = e.Execute(context.Background(), HaggleAccept{Session: session})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result = res.(HaggleResult)
+	if _, has := result.Player.Cargo["food"]; has {
+		t.Fatalf("expected food removed from cargo after selling all, got %v", result.Player.Cargo)
 	}
 }
 
-func TestBuyRejectsInsufficientCredits(t *testing.T) {
+func TestHaggleAcceptNudgesAlignment(t *testing.T) {
 	e, _ := newTestEngine(t)
 	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := e.Execute(context.Background(), Buy{Commodity: "artifacts", Quantity: 1000}); err == nil {
-		t.Fatal("expected error buying more than the player can afford")
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "narcotics", Quantity: 1, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session := res.(HaggleResult).Session
+
+	res, err = e.Execute(context.Background(), HaggleAccept{Session: session})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(HaggleResult)
+	if result.Player.Alignment.Legality >= 0 {
+		t.Fatalf("expected buying narcotics to pull legality negative, got %v", result.Player.Alignment.Legality)
 	}
 }
 
-func TestBuyRejectsInsufficientCargoSpace(t *testing.T) {
+func TestHaggleOfferAndWalkAwaySpendATurn(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	turnsBefore := repo.player.Turns.Remaining
+
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session := res.(HaggleResult).Session
+
+	res, err = e.Execute(context.Background(), HaggleOffer{Session: session, Price: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(HaggleResult)
+	if result.Player.Turns.Remaining != turnsBefore-1 {
+		t.Fatalf("expected offering a round to spend a turn: before=%d after=%d", turnsBefore, result.Player.Turns.Remaining)
+	}
+}
+
+func TestHaggleAcceptDoesNotSpendATurn(t *testing.T) {
 	e, _ := newTestEngine(t)
 	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := e.Execute(context.Background(), Buy{Commodity: "food", Quantity: cargoCapacity + 1}); err == nil {
-		t.Fatal("expected error buying more than cargo capacity")
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session := res.(HaggleResult).Session
+
+	pRes, err := e.Query(context.Background(), GetPlayer{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	turnsBefore := pRes.(player.Player).Turns.Remaining
+
+	res, err = e.Execute(context.Background(), HaggleAccept{Session: session})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(HaggleResult)
+	if result.Player.Turns.Remaining != turnsBefore {
+		t.Fatalf("expected accepting to spend no turns: before=%d after=%d", turnsBefore, result.Player.Turns.Remaining)
 	}
 }
 
-func TestSellRejectsInsufficientCargo(t *testing.T) {
+func TestHaggleWalkAwayEitherImprovesOrEndsWithPenalty(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	node := repo.player.NodeID
+
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session := res.(HaggleResult).Session
+	opening := session.NPCOffer
+
+	res, err = e.Execute(context.Background(), HaggleWalkAway{Session: session})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(HaggleResult)
+	switch result.Session.Outcome {
+	case haggle.InProgress:
+		if result.Session.NPCOffer >= opening {
+			t.Fatalf("expected a successful bluff to improve the offer below %d, got %d", opening, result.Session.NPCOffer)
+		}
+	case haggle.Rejected:
+		if result.Player.ReputationAt(node) >= 0 {
+			t.Fatalf("expected a reputation penalty for a failed bluff, got %d", result.Player.ReputationAt(node))
+		}
+	default:
+		t.Fatalf("unexpected outcome %v", result.Session.Outcome)
+	}
+}
+
+func TestHaggleActionOnConcludedSessionErrors(t *testing.T) {
 	e, _ := newTestEngine(t)
 	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := e.Execute(context.Background(), Sell{Commodity: "food", Quantity: 1}); err == nil {
-		t.Fatal("expected error selling cargo the player doesn't have")
+	res, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 5, Buying: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session := res.(HaggleResult).Session
+
+	res, err = e.Execute(context.Background(), HaggleAccept{Session: session})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	concluded := res.(HaggleResult).Session
+
+	if _, err := e.Execute(context.Background(), HaggleOffer{Session: concluded, Price: 1}); err == nil {
+		t.Fatal("expected error acting on a concluded session")
+	}
+}
+
+func TestStartHaggleRejectsInsufficientCargoSpace(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: cargoCapacity + 1, Buying: true}); err == nil {
+		t.Fatal("expected error negotiating to buy more than cargo capacity")
+	}
+}
+
+func TestStartHaggleRejectsInsufficientCargoToSell(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := e.Execute(context.Background(), StartHaggle{Commodity: "food", Quantity: 1, Buying: false}); err == nil {
+		t.Fatal("expected error negotiating to sell cargo the player doesn't have")
 	}
 }
 

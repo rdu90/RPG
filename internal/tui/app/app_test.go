@@ -10,6 +10,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine"
 	"github.com/rdu90/RPG/internal/persistence/sqlite"
 	"github.com/rdu90/RPG/internal/transport/local"
+	"github.com/rdu90/RPG/internal/transport/query"
 )
 
 // newTestHooks returns OpenSave/ListSaves backed by real SQLite files in a
@@ -121,7 +122,7 @@ func TestNewGameEntersGalaxyMap(t *testing.T) {
 	}
 }
 
-func TestFlyAndTradeRoundTrip(t *testing.T) {
+func TestFlyAndHaggleRoundTrip(t *testing.T) {
 	openSave, listSaves, cleanup := newTestHooks(t)
 	defer cleanup()
 
@@ -153,7 +154,7 @@ func TestFlyAndTradeRoundTrip(t *testing.T) {
 		t.Fatalf("expected %d turns remaining, got %d", startTurns-cost, m.player.Turns.Remaining)
 	}
 
-	// Open the trade screen and buy some food.
+	// Open the trade screen and negotiate buying some food.
 	m = key(t, m, "t")
 	if m.state != stateTrade {
 		t.Fatalf("expected stateTrade, got %v (err=%v)", m.state, m.err)
@@ -166,10 +167,21 @@ func TestFlyAndTradeRoundTrip(t *testing.T) {
 	m = key(t, m, "b")
 	m = typeString(t, m, "3")
 	m = key(t, m, "enter")
-	if m.state != stateTrade {
-		t.Fatalf("expected stateTrade after buying, got %v (err=%v)", m.state, m.err)
+	if m.state != stateHaggle {
+		t.Fatalf("expected stateHaggle after starting to buy, got %v (err=%v)", m.state, m.err)
 	}
-	commodity := m.market[0].CommodityID
+	if m.haggleSession.Outcome != query.HaggleInProgress {
+		t.Fatalf("expected a fresh negotiation to be in progress, got %v", m.haggleSession.Outcome)
+	}
+	commodity := m.haggleSession.Commodity
+
+	m = key(t, m, "a") // accept the NPC's opening offer
+	if m.state != stateHaggle {
+		t.Fatalf("expected stateHaggle after accepting, got %v (err=%v)", m.state, m.err)
+	}
+	if m.haggleSession.Outcome != query.HaggleAccepted {
+		t.Fatalf("expected the negotiation to be Accepted, got %v", m.haggleSession.Outcome)
+	}
 	if m.player.Cargo[commodity] != 3 {
 		t.Fatalf("expected 3 units of %s in cargo, got %d", commodity, m.player.Cargo[commodity])
 	}
@@ -177,13 +189,22 @@ func TestFlyAndTradeRoundTrip(t *testing.T) {
 		t.Fatalf("expected credits to decrease after buying, before=%d after=%d", creditsBeforeBuy, m.player.Credits)
 	}
 
+	m = key(t, m, "enter") // acknowledge the concluded negotiation
+	if m.state != stateTrade {
+		t.Fatalf("expected stateTrade after acknowledging the deal, got %v (err=%v)", m.state, m.err)
+	}
+
 	// Sell it back.
 	creditsBeforeSell := m.player.Credits
 	m = key(t, m, "s")
 	m = typeString(t, m, "3")
 	m = key(t, m, "enter")
-	if m.state != stateTrade {
-		t.Fatalf("expected stateTrade after selling, got %v (err=%v)", m.state, m.err)
+	if m.state != stateHaggle {
+		t.Fatalf("expected stateHaggle after starting to sell, got %v (err=%v)", m.state, m.err)
+	}
+	m = key(t, m, "a")
+	if m.haggleSession.Outcome != query.HaggleAccepted {
+		t.Fatalf("expected the negotiation to be Accepted, got %v", m.haggleSession.Outcome)
 	}
 	if _, has := m.player.Cargo[commodity]; has {
 		t.Fatalf("expected cargo to be empty after selling all units, got %v", m.player.Cargo)
@@ -191,6 +212,7 @@ func TestFlyAndTradeRoundTrip(t *testing.T) {
 	if m.player.Credits <= creditsBeforeSell {
 		t.Fatalf("expected credits to increase after selling, before=%d after=%d", creditsBeforeSell, m.player.Credits)
 	}
+	m = key(t, m, "enter") // back to the trade screen
 
 	// Simulate a fresh process: new Model over the same save directory,
 	// confirming position, turns, and credits all persisted.

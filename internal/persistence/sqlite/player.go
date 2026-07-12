@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/turn"
 )
@@ -28,8 +29,8 @@ func (s *Store) savePlayer(ctx context.Context, p player.Player) error {
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO player (id, credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO player (id, credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at, alignment_legality, alignment_morality)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			credits = excluded.credits,
 			node_id = excluded.node_id,
@@ -37,9 +38,12 @@ func (s *Store) savePlayer(ctx context.Context, p player.Player) error {
 			turns_max = excluded.turns_max,
 			turns_remaining = excluded.turns_remaining,
 			turns_refill_every_ms = excluded.turns_refill_every_ms,
-			turns_last_refill_at = excluded.turns_last_refill_at`,
+			turns_last_refill_at = excluded.turns_last_refill_at,
+			alignment_legality = excluded.alignment_legality,
+			alignment_morality = excluded.alignment_morality`,
 		p.Credits, p.NodeID, p.CargoCapacity,
 		p.Turns.Max, p.Turns.Remaining, p.Turns.RefillEvery.Milliseconds(), p.Turns.LastRefillAt,
+		p.Alignment.Legality, p.Alignment.Morality,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: save player: %w", err)
@@ -59,6 +63,20 @@ func (s *Store) savePlayer(ctx context.Context, p player.Player) error {
 		}
 	}
 
+	if _, err := tx.ExecContext(ctx, `DELETE FROM player_reputation`); err != nil {
+		return fmt.Errorf("sqlite: clear player reputation: %w", err)
+	}
+	for node, rep := range p.Reputation {
+		if rep == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO player_reputation (node_id, reputation) VALUES (?, ?)`, node, rep,
+		); err != nil {
+			return fmt.Errorf("sqlite: save player reputation at %s: %w", node, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: save player: %w", err)
 	}
@@ -75,9 +93,10 @@ func (s *Store) GetPlayer(ctx context.Context) (player.Player, error) {
 	)
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at
+		SELECT credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at, alignment_legality, alignment_morality
 		FROM player LIMIT 1`)
-	if err := row.Scan(&p.Credits, &p.NodeID, &p.CargoCapacity, &turnsMax, &turns, &refillEveryMs, &lastRefillAt); err != nil {
+	if err := row.Scan(&p.Credits, &p.NodeID, &p.CargoCapacity, &turnsMax, &turns, &refillEveryMs, &lastRefillAt,
+		&p.Alignment.Legality, &p.Alignment.Morality); err != nil {
 		return player.Player{}, fmt.Errorf("sqlite: get player: %w", err)
 	}
 	p.Turns = turn.Allowance{
@@ -104,6 +123,25 @@ func (s *Store) GetPlayer(ctx context.Context) (player.Player, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return player.Player{}, fmt.Errorf("sqlite: get player cargo: %w", err)
+	}
+
+	repRows, err := s.db.QueryContext(ctx, `SELECT node_id, reputation FROM player_reputation`)
+	if err != nil {
+		return player.Player{}, fmt.Errorf("sqlite: get player reputation: %w", err)
+	}
+	defer func() { _ = repRows.Close() }()
+
+	p.Reputation = map[galaxy.NodeID]int{}
+	for repRows.Next() {
+		var node galaxy.NodeID
+		var rep int
+		if err := repRows.Scan(&node, &rep); err != nil {
+			return player.Player{}, fmt.Errorf("sqlite: scan player reputation: %w", err)
+		}
+		p.Reputation[node] = rep
+	}
+	if err := repRows.Err(); err != nil {
+		return player.Player{}, fmt.Errorf("sqlite: get player reputation: %w", err)
 	}
 
 	return p, nil

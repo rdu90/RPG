@@ -8,6 +8,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
+	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/ports"
 )
@@ -53,3 +54,23 @@ var Commodities = economy.Commodities
 
 // FindCommodity looks up a commodity definition by ID.
 func FindCommodity(id CommodityID) (Commodity, bool) { return economy.Find(id) }
+
+// HaggleSession is the negotiation state carried between haggle rounds:
+// StartHaggle returns one, and each subsequent Haggle* command takes and
+// returns one, the same way a Command value round-trips.
+type HaggleSession = haggle.Session
+
+// HaggleResult is the result of StartHaggle and every subsequent Haggle*
+// command.
+type HaggleResult = engine.HaggleResult
+
+// HaggleOutcome describes whether a negotiation is still in progress or how
+// it concluded.
+type HaggleOutcome = haggle.Outcome
+
+// The possible values of HaggleOutcome.
+const (
+	HaggleInProgress = haggle.InProgress
+	HaggleAccepted   = haggle.Accepted
+	HaggleRejected   = haggle.Rejected
+)
