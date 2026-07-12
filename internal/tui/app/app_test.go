@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -333,5 +334,85 @@ func TestClaimAnomalyAtStartingSystem(t *testing.T) {
 	m2 := key(t, m, "c")
 	if m2.player.Credits != m.player.Credits {
 		t.Fatal("expected re-claiming an already-claimed anomaly to do nothing")
+	}
+}
+
+func TestColonizeFoundsColonyFromMap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(config.SavePath(dir, "alpha"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	openSave := func(name string) (*local.Client, error) {
+		return local.New(engine.New(store)), nil
+	}
+	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
+
+	m := New(openSave, listSaves)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+	if m.colony.Exists {
+		t.Fatal("expected no colony at the freshly-created starting system")
+	}
+	if !strings.Contains(m.View(), "No colony here") {
+		t.Fatalf("expected the map to show no-colony hint, got:\n%s", m.View())
+	}
+
+	// Top up credits directly against the store so colonization is
+	// affordable without needing to simulate a full trading session.
+	ctx := context.Background()
+	p, err := store.GetPlayer(ctx)
+	if err != nil {
+		t.Fatalf("get player: %v", err)
+	}
+	p.Credits = 10000
+	if err := store.SavePlayer(ctx, p); err != nil {
+		t.Fatalf("save player: %v", err)
+	}
+	m.player.Credits = p.Credits
+
+	m = key(t, m, "p") // open the colonize commodity picker
+	if m.state != stateColonize {
+		t.Fatalf("expected stateColonize, got %v", m.state)
+	}
+	m = key(t, m, "enter") // confirm the first commodity (food)
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap after founding a colony, got %v (err=%v)", m.state, m.err)
+	}
+	if !m.colony.Exists {
+		t.Fatal("expected a colony to now exist at the current system")
+	}
+	if m.colony.Colony.Focus != "food" {
+		t.Fatalf("expected focus food, got %s", m.colony.Colony.Focus)
+	}
+	if m.player.Credits >= 10000 {
+		t.Fatal("expected credits to be spent founding the colony")
+	}
+
+	// Founding a second colony at an already-colonized system is guarded
+	// client-side as a no-op.
+	m2 := key(t, m, "p")
+	if m2.state != stateMap {
+		t.Fatalf("expected founding to be a no-op when a colony already exists, got state %v", m2.state)
+	}
+
+	// The colonies overview screen should list what was just founded.
+	m = key(t, m, "o")
+	if m.state != stateColonies {
+		t.Fatalf("expected stateColonies, got %v (err=%v)", m.state, m.err)
+	}
+	if !strings.Contains(m.View(), "Food Rations") {
+		t.Fatalf("expected the colonies screen to list the founded colony, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "esc")
+	if m.state != stateMap {
+		t.Fatalf("expected esc to return to the map, got %v", m.state)
 	}
 }

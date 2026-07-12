@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
@@ -52,6 +53,15 @@ type PlayerRepository interface {
 	SavePlayer(ctx context.Context, p player.Player) error
 }
 
+// ColonyRepository persists and retrieves planetary colonies.
+type ColonyRepository interface {
+	SaveColony(ctx context.Context, c colony.Colony) error
+	// GetColony returns the colony at nodeID, and whether one exists there.
+	GetColony(ctx context.Context, nodeID galaxy.NodeID) (colony.Colony, bool, error)
+	// GetColonies returns every colony in the save.
+	GetColonies(ctx context.Context) ([]colony.Colony, error)
+}
+
 // Repository is the full set of repositories a persistence backend must
 // implement. A save is a single backend implementing all of them.
 type Repository interface {
@@ -59,4 +69,5 @@ type Repository interface {
 	GalaxyRepository
 	MarketRepository
 	PlayerRepository
+	ColonyRepository
 }

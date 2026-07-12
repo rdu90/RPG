@@ -48,6 +48,8 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 		return e.scoutNode(ctx, c)
 	case ClaimAnomaly:
 		return e.claimAnomaly(ctx, c)
+	case Colonize:
+		return e.colonize(ctx, c)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}
@@ -66,6 +68,10 @@ func (e *Engine) Query(ctx context.Context, q Query) (any, error) {
 		return e.getMarket(ctx)
 	case GetAnomaly:
 		return e.getAnomaly(ctx)
+	case GetColony:
+		return e.getColony(ctx)
+	case GetColonies:
+		return e.getColonies(ctx)
 	default:
 		return nil, fmt.Errorf("engine: unhandled query %T", q)
 	}

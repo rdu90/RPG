@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/explore"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
@@ -20,14 +21,15 @@ import (
 // preserving the "engine never depends on persistence" rule even at the
 // test-file level.
 type fakeRepo struct {
-	game   ports.Game
-	galaxy galaxy.Galaxy
-	market map[galaxy.NodeID][]economy.Price
-	player player.Player
+	game     ports.Game
+	galaxy   galaxy.Galaxy
+	market   map[galaxy.NodeID][]economy.Price
+	player   player.Player
+	colonies map[galaxy.NodeID]colony.Colony
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{market: map[galaxy.NodeID][]economy.Price{}}
+	return &fakeRepo{market: map[galaxy.NodeID][]economy.Price{}, colonies: map[galaxy.NodeID]colony.Colony{}}
 }
 
 func (r *fakeRepo) CreateGame(_ context.Context, name string) (ports.Game, error) {
@@ -63,6 +65,24 @@ func (r *fakeRepo) GetPlayer(_ context.Context) (player.Player, error) { return 
 func (r *fakeRepo) SavePlayer(_ context.Context, p player.Player) error {
 	r.player = p
 	return nil
+}
+
+func (r *fakeRepo) SaveColony(_ context.Context, c colony.Colony) error {
+	r.colonies[c.NodeID] = c
+	return nil
+}
+
+func (r *fakeRepo) GetColony(_ context.Context, nodeID galaxy.NodeID) (colony.Colony, bool, error) {
+	c, ok := r.colonies[nodeID]
+	return c, ok, nil
+}
+
+func (r *fakeRepo) GetColonies(_ context.Context) ([]colony.Colony, error) {
+	out := make([]colony.Colony, 0, len(r.colonies))
+	for _, c := range r.colonies {
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 func newTestEngine(t *testing.T) (*Engine, *fakeRepo) {
@@ -603,6 +623,168 @@ func TestGetAnomalyReflectsClaimedState(t *testing.T) {
 	}
 	if !res2.(AnomalyStatus).Claimed {
 		t.Fatal("expected the anomaly to be claimed after collecting it")
+	}
+}
+
+func TestColonizeFoundsColonyAndSpendsCreditsAndTurns(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	repo.player.Credits = 10000
+	node, _ := repo.galaxy.Node(repo.player.NodeID)
+	wantCost := colonizeBaseCost + colonizeCostPerDevelopmentLevel*node.DevelopmentLevel
+	creditsBefore := repo.player.Credits
+	turnsBefore := repo.player.Turns.Remaining
+
+	res, err := e.Execute(context.Background(), Colonize{Focus: "food"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(ColonizeResult)
+	if result.Colony.NodeID != repo.player.NodeID {
+		t.Fatalf("expected colony at %s, got %s", repo.player.NodeID, result.Colony.NodeID)
+	}
+	if result.Colony.Focus != "food" {
+		t.Fatalf("expected focus food, got %s", result.Colony.Focus)
+	}
+	if result.Player.Credits != creditsBefore-wantCost {
+		t.Fatalf("expected credits %d, got %d", creditsBefore-wantCost, result.Player.Credits)
+	}
+	if result.Player.Turns.Remaining != turnsBefore-colonizeTurnCost {
+		t.Fatalf("expected turns %d, got %d", turnsBefore-colonizeTurnCost, result.Player.Turns.Remaining)
+	}
+	if _, ok := repo.colonies[repo.player.NodeID]; !ok {
+		t.Fatal("expected colony to be persisted")
+	}
+}
+
+func TestColonizeRejectsWhenColonyAlreadyExists(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Credits = 10000
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "food"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "weapons"}); err == nil {
+		t.Fatal("expected error founding a second colony at the same system")
+	}
+}
+
+func TestColonizeRejectsUnknownCommodity(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "unobtainium"}); err == nil {
+		t.Fatal("expected error founding a colony with an unknown commodity focus")
+	}
+}
+
+func TestColonizeRejectsInsufficientCredits(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Credits = 0
+
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "food"}); err == nil {
+		t.Fatal("expected error founding a colony without enough credits")
+	}
+	if _, ok := repo.colonies[repo.player.NodeID]; ok {
+		t.Fatal("expected no colony to be persisted on a rejected founding")
+	}
+}
+
+func TestGetColonyReflectsNoColony(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res, err := e.Query(context.Background(), GetColony{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.(ColonyStatus).Exists {
+		t.Fatal("expected no colony to exist at a freshly-created save's starting system")
+	}
+}
+
+func TestGetColonyTicksPopulationGrowthAndDecaysFocusPrice(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Credits = 10000
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "food"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	node := repo.player.NodeID
+	priceBefore, ok := findPrice(repo.market[node], "food")
+	if !ok {
+		t.Fatal("expected food to be traded at the colony's system")
+	}
+	populationBefore := repo.colonies[node].Population
+
+	// Force the colony's clock far into the past so ticks have elapsed.
+	col := repo.colonies[node]
+	col.LastTickAt = col.LastTickAt.Add(-10 * time.Hour)
+	repo.colonies[node] = col
+
+	res, err := e.Query(context.Background(), GetColony{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	status := res.(ColonyStatus)
+	if !status.Exists {
+		t.Fatal("expected colony to exist")
+	}
+	if status.Colony.Population <= populationBefore {
+		t.Fatalf("expected population to grow, got %d <= %d", status.Colony.Population, populationBefore)
+	}
+
+	priceAfter, ok := findPrice(repo.market[node], "food")
+	if !ok {
+		t.Fatal("expected food still traded at the colony's system")
+	}
+	if priceAfter >= priceBefore {
+		t.Fatalf("expected the focus commodity's price to decay from production, got %d >= %d", priceAfter, priceBefore)
+	}
+
+	if repo.colonies[node].Population != status.Colony.Population {
+		t.Fatal("expected the ticked colony to be persisted")
+	}
+}
+
+func TestGetColoniesReturnsAllColoniesTicked(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Credits = 10000
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "food"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	neighbor := repo.galaxy.Neighbors(repo.player.NodeID)[0].To
+	repo.player.NodeID = neighbor
+	repo.player.Credits = 10000
+	if _, err := e.Execute(context.Background(), Colonize{Focus: "weapons"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res, err := e.Query(context.Background(), GetColonies{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cols := res.([]colony.Colony)
+	if len(cols) != 2 {
+		t.Fatalf("expected 2 colonies, got %d", len(cols))
 	}
 }
 

@@ -6,6 +6,7 @@ package query
 
 import (
 	"github.com/rdu90/RPG/internal/engine"
+	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/explore"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
@@ -91,6 +92,37 @@ type ClaimAnomalyResult = engine.ClaimAnomalyResult
 // AnomalyStatus is the result of GetAnomaly: what (if anything) is hidden
 // at a system, and whether it's already been claimed.
 type AnomalyStatus = engine.AnomalyStatus
+
+// GetColony returns the colony (if any) at the player's current system.
+type GetColony = engine.GetColony
+
+// GetColonies returns every colony in the save.
+type GetColonies = engine.GetColonies
+
+// ColonizeResult is the result of a Colonize command: the newly-founded
+// colony, alongside the player's current state.
+type ColonizeResult = engine.ColonizeResult
+
+// ColonyStatus is the result of GetColony: whether a colony exists at the
+// player's current system, and its state if so.
+type ColonyStatus = engine.ColonyStatus
+
+// Colony is a planetary settlement founded by Colonize: a Focus commodity
+// it produces and a population that grows on the galaxy tick, feeding back
+// into that commodity's local market price.
+type Colony = colony.Colony
+
+// ColonyPopulationCap returns a colony's population ceiling at a system of
+// the given development level.
+func ColonyPopulationCap(developmentLevel int) int { return colony.PopulationCap(developmentLevel) }
+
+// ColonizeCost returns the credit cost of founding a colony at a system of
+// the given development level.
+func ColonizeCost(developmentLevel int) int { return engine.ColonizeCost(developmentLevel) }
+
+// ColonizeTurnCost is the turn price of founding a colony, independent of
+// its credit cost.
+const ColonizeTurnCost = engine.ColonizeTurnCost
 
 // Anomaly is a secret a system may hide, discoverable by scouting it or
 // flying there.

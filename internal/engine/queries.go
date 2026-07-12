@@ -25,3 +25,13 @@ func (GetMarket) isQuery() {}
 type GetAnomaly struct{}
 
 func (GetAnomaly) isQuery() {}
+
+// GetColony returns the colony (if any) at the player's current system.
+type GetColony struct{}
+
+func (GetColony) isQuery() {}
+
+// GetColonies returns every colony in the save.
+type GetColonies struct{}
+
+func (GetColonies) isQuery() {}

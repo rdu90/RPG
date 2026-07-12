@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
@@ -80,6 +81,25 @@ func TestMarketRoundTrip(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Fatalf("expected no prices for unknown node, got %+v", empty)
+	}
+
+	// SaveMarket must fully replace an existing market (delete then
+	// reinsert), not error out on the primary key it already holds — this
+	// is the path a colony's production-driven price decay repeatedly
+	// writes through on later galaxy ticks.
+	updated := []economy.Price{
+		{CommodityID: "food", Price: 9},
+		{CommodityID: "weapons", Price: 200},
+	}
+	if err := s.SaveMarket(ctx, "sys-000", updated); err != nil {
+		t.Fatalf("re-save market: %v", err)
+	}
+	got, err = s.GetMarket(ctx, "sys-000")
+	if err != nil {
+		t.Fatalf("get market after re-save: %v", err)
+	}
+	if !reflect.DeepEqual(got, updated) {
+		t.Fatalf("market mismatch after re-save: got %+v, want %+v", got, updated)
 	}
 }
 
@@ -166,5 +186,69 @@ func TestPlayerRoundTrip(t *testing.T) {
 	}
 	if len(got.ClaimedAnomalies) != 0 {
 		t.Fatalf("expected claimed anomalies fully cleared, got %+v", got.ClaimedAnomalies)
+	}
+}
+
+func TestColonyRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	c := colony.Colony{NodeID: "sys-000", Focus: "food", Population: 120, LastTickAt: now}
+
+	if err := s.SaveColony(ctx, c); err != nil {
+		t.Fatalf("save colony: %v", err)
+	}
+
+	got, ok, err := s.GetColony(ctx, "sys-000")
+	if err != nil {
+		t.Fatalf("get colony: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected colony to exist at sys-000")
+	}
+	if got != c {
+		t.Fatalf("colony mismatch: got %+v, want %+v", got, c)
+	}
+
+	_, ok, err = s.GetColony(ctx, "sys-999")
+	if err != nil {
+		t.Fatalf("get colony for unknown node: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected no colony at sys-999")
+	}
+
+	c2 := colony.Colony{NodeID: "sys-001", Focus: "weapons", Population: 80, LastTickAt: now}
+	if err := s.SaveColony(ctx, c2); err != nil {
+		t.Fatalf("save second colony: %v", err)
+	}
+
+	all, err := s.GetColonies(ctx)
+	if err != nil {
+		t.Fatalf("get colonies: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 colonies, got %d: %+v", len(all), all)
+	}
+
+	// SaveColony must update in place, not duplicate the row.
+	c.Population = 500
+	if err := s.SaveColony(ctx, c); err != nil {
+		t.Fatalf("update colony: %v", err)
+	}
+	all, err = s.GetColonies(ctx)
+	if err != nil {
+		t.Fatalf("get colonies after update: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected still 2 colonies after update, got %d: %+v", len(all), all)
+	}
+	got, ok, err = s.GetColony(ctx, "sys-000")
+	if err != nil || !ok {
+		t.Fatalf("get updated colony: ok=%v err=%v", ok, err)
+	}
+	if got.Population != 500 {
+		t.Fatalf("expected updated population 500, got %d", got.Population)
 	}
 }

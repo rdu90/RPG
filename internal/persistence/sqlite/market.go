@@ -8,13 +8,21 @@ import (
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 )
 
-// SaveMarket implements ports.MarketRepository.
+// SaveMarket implements ports.MarketRepository. It fully replaces nodeID's
+// market (delete then reinsert), so it's safe to call repeatedly on the same
+// node — both the one-time seeding at game creation and later per-commodity
+// price updates (e.g. a colony's production decaying its Focus commodity's
+// price on each galaxy tick) go through this same path.
 func (s *Store) SaveMarket(ctx context.Context, nodeID galaxy.NodeID, prices []economy.Price) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: save market for %s: %w", nodeID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM market_prices WHERE node_id = ?`, nodeID); err != nil {
+		return fmt.Errorf("sqlite: clear market for %s: %w", nodeID, err)
+	}
 
 	for _, p := range prices {
 		if _, err := tx.ExecContext(ctx,

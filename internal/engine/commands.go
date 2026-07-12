@@ -71,3 +71,10 @@ func (ScoutNode) isCommand() {}
 type ClaimAnomaly struct{}
 
 func (ClaimAnomaly) isCommand() {}
+
+// Colonize founds a colony at the player's current system, producing Focus.
+type Colonize struct {
+	Focus economy.CommodityID
+}
+
+func (Colonize) isCommand() {}

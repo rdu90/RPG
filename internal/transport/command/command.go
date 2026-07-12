@@ -33,3 +33,6 @@ type ScoutNode = engine.ScoutNode
 // ClaimAnomaly collects the reward from an unclaimed anomaly at the
 // player's current system.
 type ClaimAnomaly = engine.ClaimAnomaly
+
+// Colonize founds a colony at the player's current system, producing Focus.
+type Colonize = engine.Colonize

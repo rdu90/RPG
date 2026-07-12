@@ -38,6 +38,8 @@ const (
 	stateMap
 	stateTrade
 	stateHaggle
+	stateColonize
+	stateColonies
 	stateError
 )
 
@@ -64,12 +66,14 @@ type worldLoadedMsg struct {
 	galaxy  query.Galaxy
 	player  query.Player
 	anomaly query.AnomalyStatus
+	colony  query.ColonyStatus
 	err     error
 }
 
 type playerUpdatedMsg struct {
 	player  query.Player
 	anomaly query.AnomalyStatus
+	colony  query.ColonyStatus
 	err     error
 }
 
@@ -81,6 +85,16 @@ type scoutedMsg struct {
 type anomalyClaimedMsg struct {
 	result query.ClaimAnomalyResult
 	err    error
+}
+
+type colonizedMsg struct {
+	result query.ColonizeResult
+	err    error
+}
+
+type coloniesLoadedMsg struct {
+	colonies []query.Colony
+	err      error
 }
 
 type marketLoadedMsg struct {
@@ -122,6 +136,11 @@ type Model struct {
 	mapCursor   int
 	anomaly     query.AnomalyStatus
 	scoutReport string
+
+	colony         query.ColonyStatus
+	colonizeCursor int
+	colonizeErr    error
+	colonies       []query.Colony
 
 	market      []query.Price
 	tradeCursor int
@@ -199,6 +218,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.galaxy = msg.galaxy
 		m.player = msg.player
 		m.anomaly = msg.anomaly
+		m.colony = msg.colony
 		m.mapCursor = 0
 		m.state = stateMap
 		return m, nil
@@ -210,6 +230,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.player = msg.player
 		m.anomaly = msg.anomaly
+		m.colony = msg.colony
 		m.scoutReport = ""
 		m.state = m.afterWork
 		return m, nil
@@ -232,6 +253,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.player = msg.result.Player
 		m.anomaly = query.AnomalyStatus{Anomaly: msg.result.Anomaly, Claimed: true}
 		m.state = stateMap
+		return m, nil
+	case colonizedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.result.Player
+		m.colony = query.ColonyStatus{Exists: true, Colony: msg.result.Colony}
+		m.state = stateMap
+		return m, nil
+	case coloniesLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.colonies = msg.colonies
+		m.state = stateColonies
 		return m, nil
 	case marketLoadedMsg:
 		if msg.err != nil {
@@ -271,6 +311,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTradeKey(msg)
 	case stateHaggle:
 		return m.handleHaggleKey(msg)
+	case stateColonize:
+		return m.handleColonizeKey(msg)
+	case stateColonies:
+		return m.handleColoniesKey(msg)
 	case stateError:
 		switch msg.String() {
 		case "esc":
@@ -395,6 +439,51 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		m.state = stateWorking
 		return m, m.loadMarketCmd()
+	case "p":
+		if m.colony.Exists {
+			return m, nil
+		}
+		m.colonizeCursor = 0
+		m.colonizeErr = nil
+		m.state = stateColonize
+		return m, nil
+	case "o":
+		m.state = stateWorking
+		return m, m.loadColoniesCmd()
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleColonizeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = stateMap
+		return m, nil
+	case "up", "k":
+		if m.colonizeCursor > 0 {
+			m.colonizeCursor--
+		}
+	case "down", "j":
+		if m.colonizeCursor < len(query.Commodities)-1 {
+			m.colonizeCursor++
+		}
+	case "enter":
+		focus := query.Commodities[m.colonizeCursor].ID
+		m.state = stateWorking
+		return m, m.colonizeCmd(focus)
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleColoniesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "enter":
+		m.state = stateMap
+		return m, nil
 	case "q":
 		return m, tea.Quit
 	}
@@ -572,7 +661,16 @@ func loadWorldCmd(client *local.Client) tea.Cmd {
 		if err != nil {
 			return worldLoadedMsg{err: err}
 		}
-		return worldLoadedMsg{galaxy: gRes.(query.Galaxy), player: pRes.(query.Player), anomaly: aRes.(query.AnomalyStatus)}
+		cRes, err := client.Query(context.Background(), query.GetColony{})
+		if err != nil {
+			return worldLoadedMsg{err: err}
+		}
+		return worldLoadedMsg{
+			galaxy:  gRes.(query.Galaxy),
+			player:  pRes.(query.Player),
+			anomaly: aRes.(query.AnomalyStatus),
+			colony:  cRes.(query.ColonyStatus),
+		}
 	}
 }
 
@@ -587,7 +685,15 @@ func (m Model) moveCmd(to query.NodeID) tea.Cmd {
 		if err != nil {
 			return playerUpdatedMsg{err: err}
 		}
-		return playerUpdatedMsg{player: res.(query.Player), anomaly: aRes.(query.AnomalyStatus)}
+		cRes, err := client.Query(context.Background(), query.GetColony{})
+		if err != nil {
+			return playerUpdatedMsg{err: err}
+		}
+		return playerUpdatedMsg{
+			player:  res.(query.Player),
+			anomaly: aRes.(query.AnomalyStatus),
+			colony:  cRes.(query.ColonyStatus),
+		}
 	}
 }
 
@@ -610,6 +716,28 @@ func (m Model) claimAnomalyCmd() tea.Cmd {
 			return anomalyClaimedMsg{err: err}
 		}
 		return anomalyClaimedMsg{result: res.(query.ClaimAnomalyResult)}
+	}
+}
+
+func (m Model) colonizeCmd(focus query.CommodityID) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.Colonize{Focus: focus})
+		if err != nil {
+			return colonizedMsg{err: err}
+		}
+		return colonizedMsg{result: res.(query.ColonizeResult)}
+	}
+}
+
+func (m Model) loadColoniesCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Query(context.Background(), query.GetColonies{})
+		if err != nil {
+			return coloniesLoadedMsg{err: err}
+		}
+		return coloniesLoadedMsg{colonies: res.([]query.Colony)}
 	}
 }
 
@@ -694,6 +822,10 @@ func (m Model) View() string {
 		return m.viewTrade()
 	case stateHaggle:
 		return m.viewHaggle()
+	case stateColonize:
+		return m.viewColonize()
+	case stateColonies:
+		return m.viewColonies()
 	case stateError:
 		return m.viewError()
 	}
@@ -753,6 +885,15 @@ func (m Model) viewMap() string {
 		}
 	}
 
+	if m.colony.Exists {
+		c, _ := query.FindCommodity(m.colony.Colony.Focus)
+		cap := query.ColonyPopulationCap(cur.DevelopmentLevel)
+		s += style.Faint.Render(fmt.Sprintf("Colony here: population %d/%d, producing %s.", m.colony.Colony.Population, cap, c.Name)) + "\n\n"
+	} else {
+		s += style.Faint.Render(fmt.Sprintf("No colony here. Press p to found one (%d cr, %d turns).",
+			query.ColonizeCost(cur.DevelopmentLevel), query.ColonizeTurnCost)) + "\n\n"
+	}
+
 	neighbors := m.galaxy.Neighbors(m.player.NodeID)
 	var target query.NodeID
 	if len(neighbors) > 0 {
@@ -784,7 +925,47 @@ func (m Model) viewMap() string {
 		s += "\n" + style.Faint.Render(m.scoutReport) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, esc to menu, q to quit")
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, esc to menu, q to quit")
+	return s
+}
+
+func (m Model) viewColonize() string {
+	cur, _ := m.galaxy.Node(m.player.NodeID)
+	s := style.Title.Render("Found Colony — "+cur.Name) + "\n\n"
+	s += fmt.Sprintf("Cost: %d cr, %d turns   Credits: %d cr   Turns: %d/%d\n\n",
+		query.ColonizeCost(cur.DevelopmentLevel), query.ColonizeTurnCost,
+		m.player.Credits, m.player.Turns.Remaining, m.player.Turns.Max)
+	s += style.Faint.Render("Choose the commodity this colony will produce:") + "\n\n"
+
+	for i, c := range query.Commodities {
+		line := fmt.Sprintf("%-20s [%s]", c.Name, c.Category)
+		if i == m.colonizeCursor {
+			s += style.Selected.Render("> "+line) + "\n"
+		} else {
+			s += "  " + line + "\n"
+		}
+	}
+
+	if m.colonizeErr != nil {
+		s += "\n" + style.ErrorText.Render(m.colonizeErr.Error()) + "\n"
+	}
+
+	s += "\n" + style.Faint.Render("up/down select, enter to found, esc to cancel")
+	return s
+}
+
+func (m Model) viewColonies() string {
+	s := style.Title.Render("Colonies") + "\n\n"
+	if len(m.colonies) == 0 {
+		s += style.Faint.Render("no colonies founded yet") + "\n"
+	}
+	for _, col := range m.colonies {
+		n, _ := m.galaxy.Node(col.NodeID)
+		c, _ := query.FindCommodity(col.Focus)
+		cap := query.ColonyPopulationCap(n.DevelopmentLevel)
+		s += fmt.Sprintf("  %-15s population %5d/%-5d producing %s\n", n.Name, col.Population, cap, c.Name)
+	}
+	s += "\n" + style.Faint.Render("esc to return to the map")
 	return s
 }
 
