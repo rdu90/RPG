@@ -52,6 +52,10 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 		return e.colonize(ctx, c)
 	case StartResearch:
 		return e.startResearch(ctx, c)
+	case RecruitSpy:
+		return e.recruitSpy(ctx, c)
+	case SendSpyMission:
+		return e.sendSpyMission(ctx, c)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}
@@ -76,6 +80,8 @@ func (e *Engine) Query(ctx context.Context, q Query) (any, error) {
 		return e.getColonies(ctx)
 	case GetTechTree:
 		return e.getTechTree(ctx)
+	case GetSpies:
+		return e.repo.GetSpies(ctx)
 	default:
 		return nil, fmt.Errorf("engine: unhandled query %T", q)
 	}

@@ -41,3 +41,8 @@ func (GetColonies) isQuery() {}
 type GetTechTree struct{}
 
 func (GetTechTree) isQuery() {}
+
+// GetSpies returns every spy the player has recruited.
+type GetSpies struct{}
+
+func (GetSpies) isQuery() {}

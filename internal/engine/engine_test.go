@@ -7,6 +7,7 @@ import (
 
 	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/explore"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
@@ -28,6 +29,7 @@ type fakeRepo struct {
 	player   player.Player
 	colonies map[galaxy.NodeID]colony.Colony
 	research techtree.Research
+	spies    []espionage.Spy
 }
 
 func newFakeRepo() *fakeRepo {
@@ -96,6 +98,23 @@ func (r *fakeRepo) GetResearch(_ context.Context) (techtree.Research, error) { r
 func (r *fakeRepo) SaveResearch(_ context.Context, res techtree.Research) error {
 	r.research = res
 	return nil
+}
+
+func (r *fakeRepo) SaveSpy(_ context.Context, spy espionage.Spy) error {
+	for i, s := range r.spies {
+		if s.ID == spy.ID {
+			r.spies[i] = spy
+			return nil
+		}
+	}
+	r.spies = append(r.spies, spy)
+	return nil
+}
+
+func (r *fakeRepo) GetSpies(_ context.Context) ([]espionage.Spy, error) {
+	out := make([]espionage.Spy, len(r.spies))
+	copy(out, r.spies)
+	return out, nil
 }
 
 func newTestEngine(t *testing.T) (*Engine, *fakeRepo) {
@@ -950,6 +969,280 @@ func TestStartHaggleAppliesTradeGreedReduction(t *testing.T) {
 	if discountedOffer >= baselineOffer {
 		t.Fatalf("expected trade greed reduction to improve the buying offer: baseline=%d discounted=%d",
 			baselineOffer, discountedOffer)
+	}
+}
+
+func TestRecruitSpyHiresAndSpendsCreditsAndTurns(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	creditsBefore := repo.player.Credits
+	turnsBefore := repo.player.Turns.Remaining
+
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(RecruitSpyResult)
+	if result.Spy.Status != espionage.StatusAvailable {
+		t.Fatalf("expected a freshly recruited spy to be available, got %v", result.Spy.Status)
+	}
+	if result.Spy.Skill < spyBaseSkill || result.Spy.Skill > spyBaseSkill+spySkillJitter {
+		t.Fatalf("expected skill within [%d,%d], got %d", spyBaseSkill, spyBaseSkill+spySkillJitter, result.Spy.Skill)
+	}
+	if result.Player.Credits != creditsBefore-recruitCost {
+		t.Fatalf("expected %d credits spent, got balance %d (was %d)", recruitCost, result.Player.Credits, creditsBefore)
+	}
+	if result.Player.Turns.Remaining != turnsBefore-recruitTurnCost {
+		t.Fatalf("expected %d turns spent, got %d remaining (was %d)", recruitTurnCost, result.Player.Turns.Remaining, turnsBefore)
+	}
+	if len(repo.spies) != 1 || repo.spies[0].ID != result.Spy.ID {
+		t.Fatal("expected the recruited spy to be persisted")
+	}
+}
+
+func TestRecruitSpyRejectsInsufficientCredits(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Credits = recruitCost - 1
+
+	if _, err := e.Execute(context.Background(), RecruitSpy{}); err == nil {
+		t.Fatal("expected error recruiting a spy without enough credits")
+	}
+}
+
+func TestSendSpyMissionRejectsUnknownSpy(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	target := repo.galaxy.Nodes[0].ID
+
+	if _, err := e.Execute(context.Background(), SendSpyMission{Spy: "no-such-spy", Target: target, Mission: espionage.MissionIntel}); err == nil {
+		t.Fatal("expected error sending an unknown spy on a mission")
+	}
+}
+
+func TestSendSpyMissionRejectsUnavailableSpy(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+	spy.Status = espionage.StatusCaptured
+	if err := repo.SaveSpy(context.Background(), spy); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	target := repo.galaxy.Nodes[0].ID
+	if _, err := e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: target, Mission: espionage.MissionIntel}); err == nil {
+		t.Fatal("expected error sending a captured spy on a mission")
+	}
+}
+
+func TestSendSpyMissionRejectsUnknownMission(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+	target := repo.galaxy.Nodes[0].ID
+
+	if _, err := e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: target, Mission: "heist"}); err == nil {
+		t.Fatal("expected error sending a spy on an unknown mission kind")
+	}
+}
+
+// The following mission-outcome tests rely on fakeRepo.CreateGame always
+// assigning game.ID = "game-1", which makes galaxy generation and every
+// mission's seeded RNG resolution fully deterministic: a freshly recruited
+// spy (deterministic ID "spy-0") sent on their first mission (MissionsRun 0)
+// against a specific target always resolves the same way. These targets
+// were discovered by probing the deterministic outcome space, the same way
+// TestStartResearchRejectsUnavailableTech relies on cargo-2's known
+// prerequisite chain.
+func TestSendSpyMissionStealAppliesCreditsOnSuccess(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+	creditsBefore := repo.player.Credits
+
+	res, err = e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: "sys-002", Mission: espionage.MissionSteal})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(MissionResult)
+	if !result.Outcome.Success {
+		t.Fatalf("expected this deterministic mission to succeed, got %+v", result.Outcome)
+	}
+	if result.CreditsStolen <= 0 {
+		t.Fatal("expected a positive credits reward on a successful steal")
+	}
+	if result.Player.Credits != creditsBefore+result.CreditsStolen {
+		t.Fatalf("expected credits to increase by %d, got balance %d (was %d)",
+			result.CreditsStolen, result.Player.Credits, creditsBefore)
+	}
+	if result.Spy.Status != espionage.StatusAvailable {
+		t.Fatalf("expected the spy to remain available after a successful mission, got %v", result.Spy.Status)
+	}
+	if result.Spy.MissionsRun != 1 {
+		t.Fatalf("expected MissionsRun to increment, got %d", result.Spy.MissionsRun)
+	}
+}
+
+func TestSendSpyMissionFailureCanCaptureTheSpy(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+
+	res, err = e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: "sys-001", Mission: espionage.MissionSteal})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(MissionResult)
+	if result.Outcome.Success {
+		t.Fatal("expected this deterministic mission to fail")
+	}
+	if !result.Outcome.Captured {
+		t.Fatal("expected this deterministic failure to capture the spy")
+	}
+	if result.Spy.Status != espionage.StatusCaptured {
+		t.Fatalf("expected the spy's persisted status to be captured, got %v", result.Spy.Status)
+	}
+
+	// A captured spy can no longer be sent on missions.
+	if _, err := e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: "sys-002", Mission: espionage.MissionSteal}); err == nil {
+		t.Fatal("expected error sending a captured spy on another mission")
+	}
+}
+
+func TestSendSpyMissionFailureWithoutCaptureLeavesSpyAvailable(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+
+	res, err = e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: "sys-004", Mission: espionage.MissionSteal})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(MissionResult)
+	if result.Outcome.Success {
+		t.Fatal("expected this deterministic mission to fail")
+	}
+	if result.Outcome.Captured {
+		t.Fatal("expected this deterministic failure to not capture the spy")
+	}
+	if result.Spy.Status != espionage.StatusAvailable {
+		t.Fatalf("expected the spy to remain available, got %v", result.Spy.Status)
+	}
+}
+
+func TestSendSpyMissionIntelRevealsTarget(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+	if repo.player.HasDiscovered("sys-004") {
+		t.Fatal("expected sys-004 to be undiscovered before the mission")
+	}
+
+	res, err = e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: "sys-004", Mission: espionage.MissionIntel})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(MissionResult)
+	if !result.Outcome.Success {
+		t.Fatalf("expected this deterministic mission to succeed, got %+v", result.Outcome)
+	}
+	if !result.Player.HasDiscovered("sys-004") {
+		t.Fatal("expected a successful intel mission to reveal the target system")
+	}
+}
+
+func TestSendSpyMissionSabotageCrashesMarketPrices(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	res, err := e.Execute(context.Background(), RecruitSpy{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spy := res.(RecruitSpyResult).Spy
+	pricesBefore := append([]economy.Price(nil), repo.market["sys-004"]...)
+
+	res, err = e.Execute(context.Background(), SendSpyMission{Spy: spy.ID, Target: "sys-004", Mission: espionage.MissionSabotage})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(MissionResult)
+	if !result.Outcome.Success {
+		t.Fatalf("expected this deterministic mission to succeed, got %+v", result.Outcome)
+	}
+
+	after := repo.market["sys-004"]
+	for i, before := range pricesBefore {
+		if after[i].Price >= before.Price {
+			t.Fatalf("expected sabotage to reduce every price at the target, commodity %s: before=%d after=%d",
+				before.CommodityID, before.Price, after[i].Price)
+		}
+	}
+}
+
+func TestGetSpiesReturnsAllRecruited(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := e.Execute(context.Background(), RecruitSpy{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Credits += recruitCost
+	if _, err := e.Execute(context.Background(), RecruitSpy{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res, err := e.Query(context.Background(), GetSpies{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spies := res.([]espionage.Spy)
+	if len(spies) != 2 {
+		t.Fatalf("expected 2 recruited spies, got %d", len(spies))
 	}
 }
 

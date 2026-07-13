@@ -8,6 +8,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine"
 	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/explore"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
@@ -158,6 +159,47 @@ const (
 
 // FindTech looks up a tech definition by ID.
 func FindTech(id TechID) (Tech, bool) { return techtree.Find(id) }
+
+// GetSpies returns every spy the player has recruited.
+type GetSpies = engine.GetSpies
+
+// RecruitSpyResult is the result of a RecruitSpy command: the newly hired
+// spy, alongside the player's current state.
+type RecruitSpyResult = engine.RecruitSpyResult
+
+// MissionResult is the result of a SendSpyMission command: the mission's
+// outcome and the spy who ran it, alongside the player's current state.
+type MissionResult = engine.MissionResult
+
+// Spy is a recruited operative the player can send on missions.
+type Spy = espionage.Spy
+
+// MissionKind identifies the narrow set of missions a spy can run.
+type MissionKind = espionage.MissionKind
+
+// The possible values of MissionKind.
+const (
+	MissionSteal    = espionage.MissionSteal
+	MissionSabotage = espionage.MissionSabotage
+	MissionIntel    = espionage.MissionIntel
+)
+
+// SpyStatus is a spy's availability.
+type SpyStatus = espionage.Status
+
+// The possible values of SpyStatus.
+const (
+	SpyAvailable = espionage.StatusAvailable
+	SpyCaptured  = espionage.StatusCaptured
+)
+
+// RecruitSpyCost, RecruitSpyTurnCost, and SpyMissionTurnCost are the credit
+// and turn prices of recruiting a spy and sending one on a mission.
+const (
+	RecruitSpyCost     = engine.RecruitSpyCost
+	RecruitSpyTurnCost = engine.RecruitSpyTurnCost
+	SpyMissionTurnCost = engine.SpyMissionTurnCost
+)
 
 // Anomaly is a secret a system may hide, discoverable by scouting it or
 // flying there.

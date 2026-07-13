@@ -41,6 +41,8 @@ const (
 	stateColonize
 	stateColonies
 	stateTechTree
+	stateEspionage
+	stateEspionageTarget
 	stateError
 )
 
@@ -108,6 +110,21 @@ type researchStartedMsg struct {
 	err    error
 }
 
+type spiesLoadedMsg struct {
+	spies []query.Spy
+	err   error
+}
+
+type spyRecruitedMsg struct {
+	result query.RecruitSpyResult
+	err    error
+}
+
+type missionSentMsg struct {
+	result query.MissionResult
+	err    error
+}
+
 type marketLoadedMsg struct {
 	prices []query.Price
 	err    error
@@ -156,6 +173,12 @@ type Model struct {
 	research    query.Research
 	techCatalog []query.Tech
 	techCursor  int
+
+	spies           []query.Spy
+	espionageCursor int
+	espionageSpy    query.Spy
+	targetCursor    int
+	missionReport   string
 
 	market      []query.Price
 	tradeCursor int
@@ -310,6 +333,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.player = msg.result.Player
 		m.state = stateTechTree
 		return m, nil
+	case spiesLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.spies = msg.spies
+		m.espionageCursor = 0
+		m.state = stateEspionage
+		return m, nil
+	case spyRecruitedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.spies = append(m.spies, msg.result.Spy)
+		m.player = msg.result.Player
+		m.state = stateEspionage
+		return m, nil
+	case missionSentMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		for i, s := range m.spies {
+			if s.ID == msg.result.Spy.ID {
+				m.spies[i] = msg.result.Spy
+				break
+			}
+		}
+		m.player = msg.result.Player
+		m.missionReport = describeMissionResult(msg.result)
+		m.state = stateEspionageTarget
+		return m, nil
 	case marketLoadedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -354,6 +413,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleColoniesKey(msg)
 	case stateTechTree:
 		return m.handleTechTreeKey(msg)
+	case stateEspionage:
+		return m.handleEspionageKey(msg)
+	case stateEspionageTarget:
+		return m.handleEspionageTargetKey(msg)
 	case stateError:
 		switch msg.String() {
 		case "esc":
@@ -492,6 +555,9 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.state = stateWorking
 		return m, m.loadTechTreeCmd()
+	case "e":
+		m.state = stateWorking
+		return m, m.loadSpiesCmd()
 	case "q":
 		return m, tea.Quit
 	}
@@ -555,6 +621,72 @@ func (m Model) handleTechTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.state = stateWorking
 		return m, m.startResearchCmd(tech.ID)
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleEspionageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	rows := len(m.spies) + 1 // +1 for the "Recruit New Spy" row
+	switch msg.String() {
+	case "esc":
+		m.state = stateMap
+		return m, nil
+	case "up", "k":
+		if m.espionageCursor > 0 {
+			m.espionageCursor--
+		}
+	case "down", "j":
+		if m.espionageCursor < rows-1 {
+			m.espionageCursor++
+		}
+	case "enter":
+		if m.espionageCursor == len(m.spies) {
+			m.state = stateWorking
+			return m, m.recruitSpyCmd()
+		}
+		spy := m.spies[m.espionageCursor]
+		if spy.Status != query.SpyAvailable {
+			return m, nil
+		}
+		m.espionageSpy = spy
+		m.targetCursor = 0
+		m.missionReport = ""
+		m.state = stateEspionageTarget
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleEspionageTargetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = stateEspionage
+		return m, nil
+	case "up", "k":
+		if m.targetCursor > 0 {
+			m.targetCursor--
+		}
+	case "down", "j":
+		if m.targetCursor < len(m.galaxy.Nodes)-1 {
+			m.targetCursor++
+		}
+	case "s", "a", "i":
+		if len(m.galaxy.Nodes) == 0 {
+			return m, nil
+		}
+		mission := query.MissionSteal
+		switch msg.String() {
+		case "a":
+			mission = query.MissionSabotage
+		case "i":
+			mission = query.MissionIntel
+		}
+		target := m.galaxy.Nodes[m.targetCursor].ID
+		m.state = stateWorking
+		return m, m.sendSpyMissionCmd(m.espionageSpy.ID, target, mission)
 	case "q":
 		return m, tea.Quit
 	}
@@ -834,6 +966,59 @@ func (m Model) startResearchCmd(tech query.TechID) tea.Cmd {
 	}
 }
 
+func (m Model) loadSpiesCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Query(context.Background(), query.GetSpies{})
+		if err != nil {
+			return spiesLoadedMsg{err: err}
+		}
+		return spiesLoadedMsg{spies: res.([]query.Spy)}
+	}
+}
+
+func (m Model) recruitSpyCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.RecruitSpy{})
+		if err != nil {
+			return spyRecruitedMsg{err: err}
+		}
+		return spyRecruitedMsg{result: res.(query.RecruitSpyResult)}
+	}
+}
+
+func (m Model) sendSpyMissionCmd(spy string, target query.NodeID, mission query.MissionKind) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.SendSpyMission{Spy: spy, Target: target, Mission: mission})
+		if err != nil {
+			return missionSentMsg{err: err}
+		}
+		return missionSentMsg{result: res.(query.MissionResult)}
+	}
+}
+
+// describeMissionResult renders a one-line report of a resolved spy mission.
+func describeMissionResult(res query.MissionResult) string {
+	if res.Outcome.Captured {
+		return fmt.Sprintf("Mission failed — %s was captured!", res.Spy.Name)
+	}
+	if !res.Outcome.Success {
+		return fmt.Sprintf("Mission failed — %s made it back safely.", res.Spy.Name)
+	}
+	switch res.Mission {
+	case query.MissionSteal:
+		return fmt.Sprintf("Success! %s stole %d credits.", res.Spy.Name, res.CreditsStolen)
+	case query.MissionSabotage:
+		return fmt.Sprintf("Success! %s sabotaged the local market.", res.Spy.Name)
+	case query.MissionIntel:
+		return fmt.Sprintf("Success! %s beamed back intel on the target system.", res.Spy.Name)
+	default:
+		return "Mission complete."
+	}
+}
+
 // describeScoutResult renders a one-line report of what a scout found (or
 // didn't) at the surveyed system.
 func describeScoutResult(res query.ScoutResult) string {
@@ -921,6 +1106,10 @@ func (m Model) View() string {
 		return m.viewColonies()
 	case stateTechTree:
 		return m.viewTechTree()
+	case stateEspionage:
+		return m.viewEspionage()
+	case stateEspionageTarget:
+		return m.viewEspionageTarget()
 	case stateError:
 		return m.viewError()
 	}
@@ -1020,7 +1209,7 @@ func (m Model) viewMap() string {
 		s += "\n" + style.Faint.Render(m.scoutReport) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, esc to menu, q to quit")
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, esc to menu, q to quit")
 	return s
 }
 
@@ -1097,6 +1286,58 @@ func (m Model) viewTechTree() string {
 	}
 
 	s += "\n" + style.Faint.Render("up/down select, enter to research (switching projects resets progress), esc back")
+	return s
+}
+
+func (m Model) viewEspionage() string {
+	s := style.Title.Render("Espionage") + "\n\n"
+	s += fmt.Sprintf("Credits: %d cr   Turns: %d/%d\n\n", m.player.Credits, m.player.Turns.Remaining, m.player.Turns.Max)
+
+	if len(m.spies) == 0 {
+		s += style.Faint.Render("no spies recruited yet") + "\n"
+	}
+	for i, spy := range m.spies {
+		line := fmt.Sprintf("%-10s skill %3d   missions %3d   [%s]", spy.Name, spy.Skill, spy.MissionsRun, spy.Status)
+		if i == m.espionageCursor {
+			s += style.Selected.Render("> "+line) + "\n"
+		} else {
+			s += "  " + line + "\n"
+		}
+	}
+
+	recruitLine := fmt.Sprintf("Recruit New Spy (%d cr, %d turns)", query.RecruitSpyCost, query.RecruitSpyTurnCost)
+	if m.espionageCursor == len(m.spies) {
+		s += style.Selected.Render("> "+recruitLine) + "\n"
+	} else {
+		s += "  " + recruitLine + "\n"
+	}
+
+	s += "\n" + style.Faint.Render("up/down select, enter to recruit or choose a spy's target, esc back")
+	return s
+}
+
+func (m Model) viewEspionageTarget() string {
+	s := style.Title.Render(fmt.Sprintf("Espionage — %s (skill %d)", m.espionageSpy.Name, m.espionageSpy.Skill)) + "\n\n"
+	s += fmt.Sprintf("Mission cost: %d turns   Turns: %d/%d\n\n", query.SpyMissionTurnCost, m.player.Turns.Remaining, m.player.Turns.Max)
+
+	for i, n := range m.galaxy.Nodes {
+		status := "undiscovered"
+		if m.player.HasDiscovered(n.ID) {
+			status = "discovered"
+		}
+		line := fmt.Sprintf("%-15s dev %d   [%s]", n.Name, n.DevelopmentLevel, status)
+		if i == m.targetCursor {
+			s += style.Selected.Render("> "+line) + "\n"
+		} else {
+			s += "  " + line + "\n"
+		}
+	}
+
+	if m.missionReport != "" {
+		s += "\n" + style.Faint.Render(m.missionReport) + "\n"
+	}
+
+	s += "\n" + style.Faint.Render("up/down select target, s to steal, a to sabotage, i for intel, esc back")
 	return s
 }
 

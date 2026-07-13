@@ -40,3 +40,10 @@ type Colonize = engine.Colonize
 // StartResearch begins researching a tech, replacing any in-progress
 // project (its accumulated progress is lost).
 type StartResearch = engine.StartResearch
+
+// RecruitSpy hires a new spy for a flat credit and turn cost.
+type RecruitSpy = engine.RecruitSpy
+
+// SendSpyMission sends a spy on a mission against a target system,
+// resolving it immediately.
+type SendSpyMission = engine.SendSpyMission

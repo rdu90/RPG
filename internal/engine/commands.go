@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/techtree"
@@ -87,3 +88,18 @@ type StartResearch struct {
 }
 
 func (StartResearch) isCommand() {}
+
+// RecruitSpy hires a new spy for a flat credit and turn cost.
+type RecruitSpy struct{}
+
+func (RecruitSpy) isCommand() {}
+
+// SendSpyMission sends Spy on a Mission against Target, resolving it
+// immediately as a single probability check.
+type SendSpyMission struct {
+	Spy     string
+	Target  galaxy.NodeID
+	Mission espionage.MissionKind
+}
+
+func (SendSpyMission) isCommand() {}

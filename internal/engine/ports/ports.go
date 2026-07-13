@@ -9,6 +9,7 @@ import (
 
 	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/techtree"
@@ -70,6 +71,14 @@ type ResearchRepository interface {
 	SaveResearch(ctx context.Context, r techtree.Research) error
 }
 
+// EspionageRepository persists and retrieves the player's recruited spies.
+type EspionageRepository interface {
+	SaveSpy(ctx context.Context, s espionage.Spy) error
+	// GetSpies returns every spy the player has recruited, regardless of
+	// status.
+	GetSpies(ctx context.Context) ([]espionage.Spy, error)
+}
+
 // Repository is the full set of repositories a persistence backend must
 // implement. A save is a single backend implementing all of them.
 type Repository interface {
@@ -79,4 +88,5 @@ type Repository interface {
 	PlayerRepository
 	ColonyRepository
 	ResearchRepository
+	EspionageRepository
 }

@@ -502,3 +502,88 @@ func TestResearchTechFromMap(t *testing.T) {
 		t.Fatalf("expected esc to return to the map, got %v", m.state)
 	}
 }
+
+func TestEspionageRecruitAndSendMissionFromMap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(config.SavePath(dir, "alpha"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	openSave := func(name string) (*local.Client, error) {
+		return local.New(engine.New(store)), nil
+	}
+	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
+
+	m := New(openSave, listSaves)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+	creditsBefore := m.player.Credits
+	turnsBefore := m.player.Turns.Remaining
+
+	m = key(t, m, "e") // open the espionage screen
+	if m.state != stateEspionage {
+		t.Fatalf("expected stateEspionage, got %v (err=%v)", m.state, m.err)
+	}
+	if len(m.spies) != 0 {
+		t.Fatalf("expected no spies yet, got %d", len(m.spies))
+	}
+	if !strings.Contains(m.View(), "Recruit New Spy") {
+		t.Fatalf("expected a recruit option, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "enter") // cursor starts on the (only) recruit row
+	if m.state != stateEspionage {
+		t.Fatalf("expected stateEspionage after recruiting, got %v (err=%v)", m.state, m.err)
+	}
+	if len(m.spies) != 1 {
+		t.Fatalf("expected 1 recruited spy, got %d", len(m.spies))
+	}
+	if m.player.Credits != creditsBefore-query.RecruitSpyCost {
+		t.Fatalf("expected %d credits spent, got balance %d", query.RecruitSpyCost, m.player.Credits)
+	}
+	if m.player.Turns.Remaining != turnsBefore-query.RecruitSpyTurnCost {
+		t.Fatalf("expected %d turns spent, got %d remaining", query.RecruitSpyTurnCost, m.player.Turns.Remaining)
+	}
+
+	// The cursor was left on row 0, which now holds the just-recruited spy.
+	if m.espionageCursor != 0 {
+		t.Fatalf("expected cursor on row 0, got %d", m.espionageCursor)
+	}
+	m = key(t, m, "enter") // select the spy, opening the target picker
+	if m.state != stateEspionageTarget {
+		t.Fatalf("expected stateEspionageTarget, got %v (err=%v)", m.state, m.err)
+	}
+	if len(m.galaxy.Nodes) == 0 {
+		t.Fatal("expected galaxy nodes to be listed as targets")
+	}
+
+	turnsBeforeMission := m.player.Turns.Remaining
+	m = key(t, m, "s") // send the selected spy on a steal mission against the first listed target
+	if m.state != stateEspionageTarget {
+		t.Fatalf("expected to remain on stateEspionageTarget after a mission, got %v (err=%v)", m.state, m.err)
+	}
+	if m.missionReport == "" {
+		t.Fatal("expected a mission report after sending a mission")
+	}
+	if m.player.Turns.Remaining != turnsBeforeMission-query.SpyMissionTurnCost {
+		t.Fatalf("expected %d turns spent on the mission, got %d remaining", query.SpyMissionTurnCost, m.player.Turns.Remaining)
+	}
+	if len(m.spies) != 1 || m.spies[0].MissionsRun != 1 {
+		t.Fatalf("expected the spy's mission count to increment, got %+v", m.spies)
+	}
+
+	m = key(t, m, "esc")
+	if m.state != stateEspionage {
+		t.Fatalf("expected esc to return to the roster, got %v", m.state)
+	}
+	m = key(t, m, "esc")
+	if m.state != stateMap {
+		t.Fatalf("expected esc to return to the map, got %v", m.state)
+	}
+}

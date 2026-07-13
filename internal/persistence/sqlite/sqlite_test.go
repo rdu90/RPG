@@ -9,6 +9,7 @@ import (
 
 	"github.com/rdu90/RPG/internal/engine/colony"
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/techtree"
@@ -311,5 +312,58 @@ func TestResearchRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Unlocked, map[techtree.TechID]bool{"cargo-1": true}) {
 		t.Fatalf("expected unlocked fully replaced, got %+v", got.Unlocked)
+	}
+}
+
+func TestSpyRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	none, err := s.GetSpies(ctx)
+	if err != nil {
+		t.Fatalf("get spies before any save: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected no spies, got %+v", none)
+	}
+
+	spy := espionage.Spy{ID: "spy-1", Name: "Nyx", Skill: 42, Status: espionage.StatusAvailable, MissionsRun: 0}
+	if err := s.SaveSpy(ctx, spy); err != nil {
+		t.Fatalf("save spy: %v", err)
+	}
+
+	got, err := s.GetSpies(ctx)
+	if err != nil {
+		t.Fatalf("get spies: %v", err)
+	}
+	if len(got) != 1 || got[0] != spy {
+		t.Fatalf("expected round-tripped spy %+v, got %+v", spy, got)
+	}
+
+	// SaveSpy must update the row in place (by ID) rather than inserting a
+	// duplicate.
+	spy.Status = espionage.StatusCaptured
+	spy.MissionsRun = 3
+	if err := s.SaveSpy(ctx, spy); err != nil {
+		t.Fatalf("re-save spy: %v", err)
+	}
+	got, err = s.GetSpies(ctx)
+	if err != nil {
+		t.Fatalf("get spies after re-save: %v", err)
+	}
+	if len(got) != 1 || got[0] != spy {
+		t.Fatalf("expected updated spy %+v, got %+v", spy, got)
+	}
+
+	other := espionage.Spy{ID: "spy-2", Name: "Vega", Skill: 55, Status: espionage.StatusAvailable}
+	if err := s.SaveSpy(ctx, other); err != nil {
+		t.Fatalf("save second spy: %v", err)
+	}
+	got, err = s.GetSpies(ctx)
+	if err != nil {
+		t.Fatalf("get spies with two rows: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected two spies, got %+v", got)
 	}
 }
