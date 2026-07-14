@@ -56,6 +56,10 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 		return e.recruitSpy(ctx, c)
 	case SendSpyMission:
 		return e.sendSpyMission(ctx, c)
+	case ResolveEncounter:
+		return e.resolveEncounter(ctx, c)
+	case RepairShip:
+		return e.repairShip(ctx, c)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}

@@ -43,6 +43,7 @@ const (
 	stateTechTree
 	stateEspionage
 	stateEspionageTarget
+	stateEncounter
 	stateError
 )
 
@@ -74,10 +75,16 @@ type worldLoadedMsg struct {
 }
 
 type playerUpdatedMsg struct {
-	player  query.Player
-	anomaly query.AnomalyStatus
-	colony  query.ColonyStatus
-	err     error
+	player    query.Player
+	anomaly   query.AnomalyStatus
+	colony    query.ColonyStatus
+	encounter *query.Hostile
+	err       error
+}
+
+type combatResolvedMsg struct {
+	result query.CombatResult
+	err    error
 }
 
 type scoutedMsg struct {
@@ -180,6 +187,10 @@ type Model struct {
 	targetCursor    int
 	missionReport   string
 
+	encounterHostile query.Hostile
+	combatResult     query.CombatResult
+	combatDone       bool
+
 	market      []query.Price
 	tradeCursor int
 	tradeMode   tradeMode
@@ -270,7 +281,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.anomaly = msg.anomaly
 		m.colony = msg.colony
 		m.scoutReport = ""
+		if msg.encounter != nil {
+			m.encounterHostile = *msg.encounter
+			m.combatDone = false
+			m.state = stateEncounter
+			return m, nil
+		}
 		m.state = m.afterWork
+		return m, nil
+	case combatResolvedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.result.Player
+		m.combatResult = msg.result
+		m.combatDone = true
+		m.state = stateEncounter
 		return m, nil
 	case scoutedMsg:
 		if msg.err != nil {
@@ -417,6 +445,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleEspionageKey(msg)
 	case stateEspionageTarget:
 		return m.handleEspionageTargetKey(msg)
+	case stateEncounter:
+		return m.handleEncounterKey(msg)
 	case stateError:
 		switch msg.String() {
 		case "esc":
@@ -558,6 +588,13 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		m.state = stateWorking
 		return m, m.loadSpiesCmd()
+	case "h":
+		if !m.player.Ship.Damaged() {
+			return m, nil
+		}
+		m.afterWork = stateMap
+		m.state = stateWorking
+		return m, m.repairShipCmd()
 	case "q":
 		return m, tea.Quit
 	}
@@ -687,6 +724,31 @@ func (m Model) handleEspionageTargetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		target := m.galaxy.Nodes[m.targetCursor].ID
 		m.state = stateWorking
 		return m, m.sendSpyMissionCmd(m.espionageSpy.ID, target, mission)
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleEncounterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.combatDone {
+		switch msg.String() {
+		case "enter", "esc":
+			m.combatDone = false
+			m.state = stateMap
+			return m, nil
+		case "q":
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "f":
+		m.state = stateWorking
+		return m, m.resolveEncounterCmd(m.encounterHostile, false)
+	case "r":
+		m.state = stateWorking
+		return m, m.resolveEncounterCmd(m.encounterHostile, true)
 	case "q":
 		return m, tea.Quit
 	}
@@ -884,6 +946,7 @@ func (m Model) moveCmd(to query.NodeID) tea.Cmd {
 		if err != nil {
 			return playerUpdatedMsg{err: err}
 		}
+		result := res.(query.MoveResult)
 		aRes, err := client.Query(context.Background(), query.GetAnomaly{})
 		if err != nil {
 			return playerUpdatedMsg{err: err}
@@ -893,10 +956,35 @@ func (m Model) moveCmd(to query.NodeID) tea.Cmd {
 			return playerUpdatedMsg{err: err}
 		}
 		return playerUpdatedMsg{
-			player:  res.(query.Player),
-			anomaly: aRes.(query.AnomalyStatus),
-			colony:  cRes.(query.ColonyStatus),
+			player:    result.Player,
+			anomaly:   aRes.(query.AnomalyStatus),
+			colony:    cRes.(query.ColonyStatus),
+			encounter: result.Encounter,
 		}
+	}
+}
+
+func (m Model) resolveEncounterCmd(hostile query.Hostile, flee bool) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.ResolveEncounter{Hostile: hostile, Flee: flee})
+		if err != nil {
+			return combatResolvedMsg{err: err}
+		}
+		return combatResolvedMsg{result: res.(query.CombatResult)}
+	}
+}
+
+func (m Model) repairShipCmd() tea.Cmd {
+	client := m.client
+	anomaly := m.anomaly
+	colony := m.colony
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.RepairShip{})
+		if err != nil {
+			return playerUpdatedMsg{err: err}
+		}
+		return playerUpdatedMsg{player: res.(query.Player), anomaly: anomaly, colony: colony}
 	}
 }
 
@@ -1019,6 +1107,23 @@ func describeMissionResult(res query.MissionResult) string {
 	}
 }
 
+// describeCombatResult renders a one-line report of a resolved encounter.
+func describeCombatResult(res query.CombatResult) string {
+	if res.Fled {
+		return fmt.Sprintf("You evaded the %s and slipped away.", res.Hostile.Name)
+	}
+	switch res.Battle.Outcome {
+	case query.CombatVictory:
+		return fmt.Sprintf("Victory! You destroyed the %s and salvaged %d credits.", res.Hostile.Name, res.CreditsGained)
+	case query.CombatDefeat:
+		return fmt.Sprintf("Defeat! Your ship was disabled — the %s made off with %d credits and some cargo.", res.Hostile.Name, res.CreditsLost)
+	case query.CombatDisengaged:
+		return fmt.Sprintf("The %s broke off the attack.", res.Hostile.Name)
+	default:
+		return "The encounter is over."
+	}
+}
+
 // describeScoutResult renders a one-line report of what a scout found (or
 // didn't) at the surveyed system.
 func describeScoutResult(res query.ScoutResult) string {
@@ -1110,6 +1215,8 @@ func (m Model) View() string {
 		return m.viewEspionage()
 	case stateEspionageTarget:
 		return m.viewEspionageTarget()
+	case stateEncounter:
+		return m.viewEncounter()
 	case stateError:
 		return m.viewError()
 	}
@@ -1156,10 +1263,14 @@ func (m Model) viewMap() string {
 	s := style.Title.Render("RPG — "+m.game.Name) + "\n\n"
 
 	cur, _ := m.galaxy.Node(m.player.NodeID)
-	s += fmt.Sprintf("System: %s (dev %d)   Credits: %d cr   Turns: %d/%d   Cargo: %d/%d\n\n",
+	s += fmt.Sprintf("System: %s (dev %d)   Credits: %d cr   Turns: %d/%d   Cargo: %d/%d   Hull: %d/%d\n\n",
 		cur.Name, cur.DevelopmentLevel, m.player.Credits,
 		m.player.Turns.Remaining, m.player.Turns.Max,
-		m.player.CargoUsed(), m.player.CargoCapacity)
+		m.player.CargoUsed(), m.player.CargoCapacity,
+		m.player.Ship.Hull, m.player.Ship.MaxHull)
+	if m.player.Ship.Damaged() {
+		s += style.Faint.Render(fmt.Sprintf("Hull damaged. Press h to repair (%d cr/point).", query.RepairCostPerHull)) + "\n\n"
+	}
 
 	if !m.anomaly.Anomaly.Empty() {
 		if m.anomaly.Claimed {
@@ -1209,7 +1320,7 @@ func (m Model) viewMap() string {
 		s += "\n" + style.Faint.Render(m.scoutReport) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, esc to menu, q to quit")
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, h to repair, esc to menu, q to quit")
 	return s
 }
 
@@ -1338,6 +1449,28 @@ func (m Model) viewEspionageTarget() string {
 	}
 
 	s += "\n" + style.Faint.Render("up/down select target, s to steal, a to sabotage, i for intel, esc back")
+	return s
+}
+
+func (m Model) viewEncounter() string {
+	if m.combatDone {
+		s := style.Title.Render("Combat Report") + "\n\n"
+		s += describeCombatResult(m.combatResult) + "\n\n"
+		if len(m.combatResult.Battle.Log) > 0 {
+			s += strings.Join(m.combatResult.Battle.Log, "\n") + "\n\n"
+		}
+		s += fmt.Sprintf("Ship: Attack %d, Defense %d, Hull %d/%d   Credits: %d cr\n\n",
+			m.player.Ship.Attack, m.player.Ship.Defense, m.player.Ship.Hull, m.player.Ship.MaxHull, m.player.Credits)
+		s += style.Faint.Render("enter to continue")
+		return s
+	}
+
+	h := m.encounterHostile
+	s := style.Title.Render("Hostile Encounter") + "\n\n"
+	s += fmt.Sprintf("A %s approaches! Attack %d, Defense %d, Hull %d/%d\n\n", h.Name, h.Attack, h.Defense, h.Hull, h.MaxHull)
+	s += fmt.Sprintf("Your ship: Attack %d, Defense %d, Hull %d/%d\n\n",
+		m.player.Ship.Attack, m.player.Ship.Defense, m.player.Ship.Hull, m.player.Ship.MaxHull)
+	s += style.Faint.Render("f to fight, r to attempt to flee, q to quit")
 	return s
 }
 

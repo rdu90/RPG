@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
 	"github.com/rdu90/RPG/internal/engine/ports"
@@ -20,6 +21,10 @@ const (
 	cargoCapacity   = 40
 	turnsMax        = 100
 	turnRefillEvery = 20 * time.Second
+
+	startingAttack  = 12
+	startingDefense = 6
+	startingHull    = 50
 )
 
 // createGame creates the save's identity record, then generates and
@@ -54,6 +59,7 @@ func (e *Engine) createGame(ctx context.Context, c CreateGame) (ports.Game, erro
 		Turns:         turn.New(turnsMax, turnRefillEvery, game.CreatedAt),
 		Reputation:    map[galaxy.NodeID]int{},
 		Discovered:    map[galaxy.NodeID]bool{gal.Nodes[0].ID: true},
+		Ship:          fleet.Stats{Attack: startingAttack, Defense: startingDefense, Hull: startingHull, MaxHull: startingHull},
 	}
 	if err := e.repo.InitPlayer(ctx, p); err != nil {
 		return ports.Game{}, fmt.Errorf("engine: init player: %w", err)

@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"github.com/rdu90/RPG/internal/engine/colony"
+	"github.com/rdu90/RPG/internal/engine/combat"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/explore"
+	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
@@ -175,7 +177,7 @@ func TestMoveAlongWarpLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	p := res.(player.Player)
+	p := res.(MoveResult).Player
 	if p.NodeID != edge.To {
 		t.Fatalf("expected player at %s, got %s", edge.To, p.NodeID)
 	}
@@ -1243,6 +1245,140 @@ func TestGetSpiesReturnsAllRecruited(t *testing.T) {
 	spies := res.([]espionage.Spy)
 	if len(spies) != 2 {
 		t.Fatalf("expected 2 recruited spies, got %d", len(spies))
+	}
+}
+
+func TestMoveMayProduceAnEncounter(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	start := repo.player.NodeID
+	edge := repo.galaxy.Neighbors(start)[0]
+
+	var sawEncounter bool
+	// Repeated arrivals (each a distinct Trips nonce) should eventually
+	// roll an encounter, since EncounterChance is always positive.
+	for i := 0; i < 200 && !sawEncounter; i++ {
+		to := edge.To
+		if repo.player.NodeID == edge.To {
+			to = start
+		}
+		res, err := e.Execute(context.Background(), Move{To: to})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.(MoveResult).Encounter != nil {
+			sawEncounter = true
+		}
+	}
+	if !sawEncounter {
+		t.Fatal("expected at least one encounter across 200 arrivals")
+	}
+}
+
+func TestResolveEncounterFightVictoryGrantsLoot(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Ship = fleet.Stats{Attack: 100, Defense: 100, Hull: 200, MaxHull: 200}
+	creditsBefore := repo.player.Credits
+	hostile := combat.Hostile{Seed: 1, Name: "Raider", Attack: 5, Defense: 1, Hull: 10, MaxHull: 10}
+
+	res, err := e.Execute(context.Background(), ResolveEncounter{Hostile: hostile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(CombatResult)
+	if result.Battle.Outcome != combat.Victory {
+		t.Fatalf("expected Victory, got %s", result.Battle.Outcome)
+	}
+	if result.CreditsGained <= 0 {
+		t.Fatalf("expected positive loot, got %d", result.CreditsGained)
+	}
+	if result.Player.Credits != creditsBefore+result.CreditsGained {
+		t.Fatalf("expected credits %d, got %d", creditsBefore+result.CreditsGained, result.Player.Credits)
+	}
+}
+
+func TestResolveEncounterFightDefeatCostsCreditsAndCargo(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Ship = fleet.Stats{Attack: 1, Defense: 1, Hull: 10, MaxHull: 10}
+	repo.player.Cargo[economy.Commodities[0].ID] = 10
+	creditsBefore := repo.player.Credits
+	hostile := combat.Hostile{Seed: 1, Name: "Marauder", Attack: 100, Defense: 100, Hull: 200, MaxHull: 200}
+
+	res, err := e.Execute(context.Background(), ResolveEncounter{Hostile: hostile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := res.(CombatResult)
+	if result.Battle.Outcome != combat.Defeat {
+		t.Fatalf("expected Defeat, got %s", result.Battle.Outcome)
+	}
+	if result.CreditsLost <= 0 {
+		t.Fatalf("expected credits lost, got %d", result.CreditsLost)
+	}
+	if result.Player.Credits != creditsBefore-result.CreditsLost {
+		t.Fatalf("expected credits %d, got %d", creditsBefore-result.CreditsLost, result.Player.Credits)
+	}
+	if result.Player.Cargo[economy.Commodities[0].ID] >= 10 {
+		t.Fatalf("expected cargo to be raided, got %d", result.Player.Cargo[economy.Commodities[0].ID])
+	}
+	if result.Player.Ship.Hull != 0 {
+		t.Fatalf("expected hull at 0 after defeat, got %d", result.Player.Ship.Hull)
+	}
+}
+
+func TestRepairShipRestoresHullForCredits(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Ship = fleet.Stats{Attack: 12, Defense: 6, Hull: 10, MaxHull: 50}
+	creditsBefore := repo.player.Credits
+	wantCost := (50 - 10) * repairCostPerHull
+
+	res, err := e.Execute(context.Background(), RepairShip{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p := res.(player.Player)
+	if p.Ship.Hull != p.Ship.MaxHull {
+		t.Fatalf("expected full hull, got %d/%d", p.Ship.Hull, p.Ship.MaxHull)
+	}
+	if p.Credits != creditsBefore-wantCost {
+		t.Fatalf("expected %d credits spent, got balance %d (was %d)", wantCost, p.Credits, creditsBefore)
+	}
+}
+
+func TestRepairShipRejectsWhenAlreadyFull(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Ship = fleet.Stats{Attack: 12, Defense: 6, Hull: 50, MaxHull: 50}
+
+	if _, err := e.Execute(context.Background(), RepairShip{}); err == nil {
+		t.Fatal("expected error repairing an already-full hull")
+	}
+}
+
+func TestRepairShipRejectsInsufficientCredits(t *testing.T) {
+	e, repo := newTestEngine(t)
+	if _, err := e.Execute(context.Background(), CreateGame{Name: "alpha"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	repo.player.Ship = fleet.Stats{Attack: 12, Defense: 6, Hull: 1, MaxHull: 50}
+	repo.player.Credits = 0
+
+	if _, err := e.Execute(context.Background(), RepairShip{}); err == nil {
+		t.Fatal("expected error repairing without enough credits")
 	}
 }
 

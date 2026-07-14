@@ -29,8 +29,8 @@ func (s *Store) savePlayer(ctx context.Context, p player.Player) error {
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO player (id, credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at, alignment_legality, alignment_morality)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO player (id, credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at, alignment_legality, alignment_morality, ship_attack, ship_defense, ship_hull, ship_max_hull, trips)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			credits = excluded.credits,
 			node_id = excluded.node_id,
@@ -40,10 +40,16 @@ func (s *Store) savePlayer(ctx context.Context, p player.Player) error {
 			turns_refill_every_ms = excluded.turns_refill_every_ms,
 			turns_last_refill_at = excluded.turns_last_refill_at,
 			alignment_legality = excluded.alignment_legality,
-			alignment_morality = excluded.alignment_morality`,
+			alignment_morality = excluded.alignment_morality,
+			ship_attack = excluded.ship_attack,
+			ship_defense = excluded.ship_defense,
+			ship_hull = excluded.ship_hull,
+			ship_max_hull = excluded.ship_max_hull,
+			trips = excluded.trips`,
 		p.Credits, p.NodeID, p.CargoCapacity,
 		p.Turns.Max, p.Turns.Remaining, p.Turns.RefillEvery.Milliseconds(), p.Turns.LastRefillAt,
 		p.Alignment.Legality, p.Alignment.Morality,
+		p.Ship.Attack, p.Ship.Defense, p.Ship.Hull, p.Ship.MaxHull, p.Trips,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: save player: %w", err)
@@ -115,10 +121,11 @@ func (s *Store) GetPlayer(ctx context.Context) (player.Player, error) {
 	)
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at, alignment_legality, alignment_morality
+		SELECT credits, node_id, cargo_capacity, turns_max, turns_remaining, turns_refill_every_ms, turns_last_refill_at, alignment_legality, alignment_morality, ship_attack, ship_defense, ship_hull, ship_max_hull, trips
 		FROM player LIMIT 1`)
 	if err := row.Scan(&p.Credits, &p.NodeID, &p.CargoCapacity, &turnsMax, &turns, &refillEveryMs, &lastRefillAt,
-		&p.Alignment.Legality, &p.Alignment.Morality); err != nil {
+		&p.Alignment.Legality, &p.Alignment.Morality,
+		&p.Ship.Attack, &p.Ship.Defense, &p.Ship.Hull, &p.Ship.MaxHull, &p.Trips); err != nil {
 		return player.Player{}, fmt.Errorf("sqlite: get player: %w", err)
 	}
 	p.Turns = turn.Allowance{

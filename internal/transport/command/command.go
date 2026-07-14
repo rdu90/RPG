@@ -47,3 +47,11 @@ type RecruitSpy = engine.RecruitSpy
 // SendSpyMission sends a spy on a mission against a target system,
 // resolving it immediately.
 type SendSpyMission = engine.SendSpyMission
+
+// ResolveEncounter resolves a hostile encountered on arrival: either an
+// attempted flee or a fight to a conclusion.
+type ResolveEncounter = engine.ResolveEncounter
+
+// RepairShip restores the player's ship to full hull for a credit cost
+// proportional to the damage repaired.
+type RepairShip = engine.RepairShip

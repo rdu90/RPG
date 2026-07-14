@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/rdu90/RPG/internal/engine/combat"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
@@ -103,3 +104,20 @@ type SendSpyMission struct {
 }
 
 func (SendSpyMission) isCommand() {}
+
+// ResolveEncounter resolves a hostile encountered on arrival: either an
+// attempted flee or a fight to a conclusion if fleeing isn't chosen (or
+// fails). Hostile must be the exact value returned by the Move that
+// generated it.
+type ResolveEncounter struct {
+	Hostile combat.Hostile
+	Flee    bool
+}
+
+func (ResolveEncounter) isCommand() {}
+
+// RepairShip restores the player's ship to full hull for a credit cost
+// proportional to the damage repaired.
+type RepairShip struct{}
+
+func (RepairShip) isCommand() {}

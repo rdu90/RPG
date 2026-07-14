@@ -4,6 +4,7 @@ package player
 
 import (
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/turn"
 )
@@ -19,6 +20,12 @@ type Player struct {
 	Alignment        Alignment
 	Discovered       map[galaxy.NodeID]bool
 	ClaimedAnomalies map[galaxy.NodeID]bool
+	Ship             fleet.Stats
+	// Trips counts completed Move commands: the nonce that makes each
+	// arrival's hostile-encounter roll (and any Hostile it generates)
+	// unique, the same role espionage.Spy.MissionsRun plays for repeated
+	// missions against the same target.
+	Trips int
 }
 
 // CargoUsed returns the total units currently held across all commodities.

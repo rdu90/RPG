@@ -587,3 +587,87 @@ func TestEspionageRecruitAndSendMissionFromMap(t *testing.T) {
 		t.Fatalf("expected esc to return to the map, got %v", m.state)
 	}
 }
+
+// flyUntilEncounter repeatedly flies to the first-listed neighbor until a
+// hostile encounter is rolled, resetting mapCursor each hop so a shorter
+// neighbor list at the new system can't leave it pointing out of range.
+func flyUntilEncounter(t *testing.T, m Model) Model {
+	t.Helper()
+	for i := 0; i < 80; i++ {
+		if len(m.galaxy.Neighbors(m.player.NodeID)) == 0 {
+			t.Fatal("expected at least one warp lane from the current system")
+		}
+		m.mapCursor = 0
+		m = key(t, m, "enter")
+		if m.err != nil {
+			t.Fatalf("unexpected error while hunting for an encounter: %v", m.err)
+		}
+		if m.state == stateEncounter {
+			return m
+		}
+	}
+	t.Fatal("expected a hostile encounter within 80 flights")
+	return m
+}
+
+func TestHostileEncounterFightResolvesAndReturnsToMap(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "encounter-fight")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	m = flyUntilEncounter(t, m)
+	if !strings.Contains(m.View(), "approaches") {
+		t.Fatalf("expected an encounter prompt, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "f") // fight
+	if m.state != stateEncounter || !m.combatDone {
+		t.Fatalf("expected a resolved encounter screen, got state=%v combatDone=%v (err=%v)", m.state, m.combatDone, m.err)
+	}
+	if !strings.Contains(m.View(), "Combat Report") {
+		t.Fatalf("expected a combat report, got:\n%s", m.View())
+	}
+	if len(m.combatResult.Battle.Log) == 0 {
+		t.Fatal("expected a non-empty battle log after fighting")
+	}
+
+	m = key(t, m, "enter") // acknowledge the report
+	if m.state != stateMap {
+		t.Fatalf("expected esc/enter to return to the map, got %v (err=%v)", m.state, m.err)
+	}
+}
+
+func TestHostileEncounterFleeResolvesAndReturnsToMap(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "encounter-flee")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	m = flyUntilEncounter(t, m)
+
+	m = key(t, m, "r") // attempt to flee
+	if m.state != stateEncounter || !m.combatDone {
+		t.Fatalf("expected a resolved encounter screen, got state=%v combatDone=%v (err=%v)", m.state, m.combatDone, m.err)
+	}
+	if !strings.Contains(m.View(), "enter to continue") {
+		t.Fatalf("expected a combat report, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "enter") // acknowledge the report
+	if m.state != stateMap {
+		t.Fatalf("expected esc/enter to return to the map, got %v (err=%v)", m.state, m.err)
+	}
+}

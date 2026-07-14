@@ -7,9 +7,11 @@ package query
 import (
 	"github.com/rdu90/RPG/internal/engine"
 	"github.com/rdu90/RPG/internal/engine/colony"
+	"github.com/rdu90/RPG/internal/engine/combat"
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/explore"
+	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
 	"github.com/rdu90/RPG/internal/engine/player"
@@ -215,3 +217,36 @@ const (
 	AnomalyBeacon   = explore.KindBeacon
 	AnomalyCache    = explore.KindCache
 )
+
+// MoveResult is the result of a Move command: the player's state after
+// flying, alongside any hostile encountered on arrival (nil if the flight
+// was uneventful).
+type MoveResult = engine.MoveResult
+
+// ShipStats are the player's ship's combat capabilities.
+type ShipStats = fleet.Stats
+
+// Hostile is a single NPC raider encountered on arrival at a system.
+type Hostile = combat.Hostile
+
+// CombatResult is the result of a ResolveEncounter command: the resolved
+// battle (or flee attempt), alongside the player's current state.
+type CombatResult = engine.CombatResult
+
+// CombatOutcome is how a resolved battle concluded.
+type CombatOutcome = combat.Outcome
+
+// The possible values of CombatOutcome.
+const (
+	CombatVictory    = combat.Victory
+	CombatDefeat     = combat.Defeat
+	CombatDisengaged = combat.Disengaged
+)
+
+// EncounterChance returns the odds of meeting a hostile on arrival at a
+// system of the given development level.
+func EncounterChance(developmentLevel int) float64 { return combat.EncounterChance(developmentLevel) }
+
+// RepairCostPerHull is the credit price of restoring one point of hull
+// damage.
+const RepairCostPerHull = engine.RepairCostPerHull
