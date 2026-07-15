@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 )
 
@@ -20,7 +21,18 @@ type Colony struct {
 	Focus      economy.CommodityID
 	Population int
 	LastTickAt time.Time
+
+	// Owner is OwnerPlayer for a player-founded colony, or a
+	// faction.Faction ID for a rival-held one. Garrison is meaningful only
+	// when Owner is not OwnerPlayer: the defensive fleet a Bombard/Invade
+	// action wears down or must defeat to capture the colony.
+	Owner    string
+	Garrison fleet.Stats
 }
+
+// OwnerPlayer is the sentinel Owner value for a colony founded by the
+// player, as opposed to a rival faction.
+const OwnerPlayer = "player"
 
 const (
 	// startingPopulation is a new colony's population at founding.
@@ -52,9 +64,18 @@ const (
 	priceFloorFraction = 0.3
 )
 
-// New founds a colony at nodeID producing focus, starting at now.
+// New founds a player-owned colony at nodeID producing focus, starting at
+// now.
 func New(nodeID galaxy.NodeID, focus economy.CommodityID, now time.Time) Colony {
-	return Colony{NodeID: nodeID, Focus: focus, Population: startingPopulation, LastTickAt: now}
+	return Colony{NodeID: nodeID, Focus: focus, Population: startingPopulation, LastTickAt: now, Owner: OwnerPlayer}
+}
+
+// NewRival founds a rival-faction-owned colony at nodeID, used only when
+// seeding the galaxy at game creation. Unlike a player-founded colony, its
+// starting population and defensive garrison are supplied by the caller
+// rather than starting from scratch.
+func NewRival(nodeID galaxy.NodeID, focus economy.CommodityID, owner string, population int, garrison fleet.Stats, now time.Time) Colony {
+	return Colony{NodeID: nodeID, Focus: focus, Population: population, LastTickAt: now, Owner: owner, Garrison: garrison}
 }
 
 // PopulationCap returns the population ceiling for a colony at a system of

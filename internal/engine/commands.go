@@ -121,3 +121,16 @@ func (ResolveEncounter) isCommand() {}
 type RepairShip struct{}
 
 func (RepairShip) isCommand() {}
+
+// Bombard strikes the rival-faction colony at the player's current system
+// from orbit, weakening its garrison and population without risking the
+// player's ship.
+type Bombard struct{}
+
+func (Bombard) isCommand() {}
+
+// Invade attempts to capture the rival-faction colony at the player's
+// current system by fighting its garrison to a conclusion.
+type Invade struct{}
+
+func (Invade) isCommand() {}

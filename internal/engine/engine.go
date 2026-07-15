@@ -60,6 +60,10 @@ func (e *Engine) Execute(ctx context.Context, cmd Command) (any, error) {
 		return e.resolveEncounter(ctx, c)
 	case RepairShip:
 		return e.repairShip(ctx, c)
+	case Bombard:
+		return e.bombard(ctx, c)
+	case Invade:
+		return e.invade(ctx, c)
 	default:
 		return nil, fmt.Errorf("engine: unhandled command %T", cmd)
 	}

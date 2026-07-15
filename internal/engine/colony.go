@@ -118,7 +118,9 @@ func (e *Engine) getColony(ctx context.Context) (ColonyStatus, error) {
 	return ColonyStatus{Exists: true, Colony: col}, nil
 }
 
-// getColonies returns every colony in the save, each advanced to now.
+// getColonies returns every player-owned colony in the save, each advanced
+// to now. Rival-faction colonies are still ticked (so their production
+// keeps decaying local market prices) but excluded from the result.
 func (e *Engine) getColonies(ctx context.Context) ([]colony.Colony, error) {
 	cols, err := e.repo.GetColonies(ctx)
 	if err != nil {
@@ -130,6 +132,9 @@ func (e *Engine) getColonies(ctx context.Context) ([]colony.Colony, error) {
 		col, err := e.tickColony(ctx, col)
 		if err != nil {
 			return nil, err
+		}
+		if col.Owner != colony.OwnerPlayer {
+			continue
 		}
 		out = append(out, col)
 	}

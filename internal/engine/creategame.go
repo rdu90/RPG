@@ -6,7 +6,10 @@ import (
 	"hash/fnv"
 	"time"
 
+	"github.com/rdu90/RPG/internal/engine/colony"
+	"github.com/rdu90/RPG/internal/engine/combat"
 	"github.com/rdu90/RPG/internal/engine/economy"
+	"github.com/rdu90/RPG/internal/engine/faction"
 	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/player"
@@ -25,6 +28,19 @@ const (
 	startingAttack  = 12
 	startingDefense = 6
 	startingHull    = 50
+
+	// rivalColonyMinDevelopmentLevel and rivalColonyChance gate which
+	// systems can be seeded with a rival-faction colony at galaxy
+	// generation: only reasonably developed systems, and only a fraction
+	// of those, so a 16-node galaxy ends up with a handful of rival
+	// colonies rather than one on every eligible system.
+	rivalColonyMinDevelopmentLevel = 3
+	rivalColonyChance              = 0.4
+
+	// rivalColonyStartingPopulationFraction is how much of a rival
+	// colony's development-level population cap it starts at, so it reads
+	// as an already-established settlement rather than a fresh founding.
+	rivalColonyStartingPopulationFraction = 0.5
 )
 
 // createGame creates the save's identity record, then generates and
@@ -44,10 +60,26 @@ func (e *Engine) createGame(ctx context.Context, c CreateGame) (ports.Game, erro
 	}
 
 	r := rng.New(seed)
+	startNode := gal.Nodes[0].ID
 	for _, node := range gal.Nodes {
 		prices := economy.GenerateMarket(r, node.DevelopmentLevel)
 		if err := e.repo.SaveMarket(ctx, node.ID, prices); err != nil {
 			return ports.Game{}, fmt.Errorf("engine: save market for %s: %w", node.ID, err)
+		}
+
+		if node.ID == startNode || node.DevelopmentLevel < rivalColonyMinDevelopmentLevel {
+			continue
+		}
+		if r.Float64() >= rivalColonyChance {
+			continue
+		}
+		owner := faction.Catalog[r.IntN(len(faction.Catalog))].ID
+		focus := economy.Commodities[r.IntN(len(economy.Commodities))].ID
+		population := int(float64(colony.PopulationCap(node.DevelopmentLevel)) * rivalColonyStartingPopulationFraction)
+		garrison := combat.GenerateGarrison(r, node.DevelopmentLevel)
+		col := colony.NewRival(node.ID, focus, owner, population, garrison, game.CreatedAt)
+		if err := e.repo.SaveColony(ctx, col); err != nil {
+			return ports.Game{}, fmt.Errorf("engine: seed rival colony at %s: %w", node.ID, err)
 		}
 	}
 

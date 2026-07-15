@@ -127,3 +127,25 @@ func TestFightIsDeterministic(t *testing.T) {
 		t.Fatalf("expected identical results from identical inputs, got %+v and %+v", a, b)
 	}
 }
+
+func TestGenerateGarrisonIsDeterministic(t *testing.T) {
+	for seed := uint64(0); seed < 50; seed++ {
+		a := GenerateGarrison(newRand(seed), 3)
+		b := GenerateGarrison(newRand(seed), 3)
+		if a != b {
+			t.Fatalf("seed %d: expected identical garrisons, got %+v and %+v", seed, a, b)
+		}
+	}
+}
+
+func TestGenerateGarrisonIsFortifiedAboveAnEquivalentHostile(t *testing.T) {
+	const trials = 200
+	var hostileHull, garrisonHull int
+	for seed := uint64(0); seed < trials; seed++ {
+		hostileHull += Generate(newRand(seed), int64(seed), 3).MaxHull
+		garrisonHull += GenerateGarrison(newRand(seed), 3).MaxHull
+	}
+	if garrisonHull <= hostileHull {
+		t.Fatalf("expected a garrison to be tougher on average than an equivalent wandering hostile, got hostile=%d garrison=%d", hostileHull, garrisonHull)
+	}
+}

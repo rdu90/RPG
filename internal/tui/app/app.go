@@ -46,6 +46,7 @@ const (
 	stateEspionage
 	stateEspionageTarget
 	stateEncounter
+	stateInvade
 	stateHelp
 	stateError
 )
@@ -145,6 +146,16 @@ type haggleUpdatedMsg struct {
 	err    error
 }
 
+type bombardedMsg struct {
+	result query.BombardResult
+	err    error
+}
+
+type invadedMsg struct {
+	result query.InvadeResult
+	err    error
+}
+
 // Model is the root bubbletea model.
 type Model struct {
 	openSave  OpenSave
@@ -195,6 +206,9 @@ type Model struct {
 	encounterHostile query.Hostile
 	combatResult     query.CombatResult
 	combatDone       bool
+
+	bombardReport string
+	invadeResult  query.InvadeResult
 
 	market      []query.Price
 	tradeCursor int
@@ -296,6 +310,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.anomaly = msg.anomaly
 		m.colony = msg.colony
 		m.scoutReport = ""
+		m.bombardReport = ""
 		if msg.encounter != nil {
 			m.encounterHostile = *msg.encounter
 			m.combatDone = false
@@ -344,6 +359,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.player = msg.result.Player
 		m.colony = query.ColonyStatus{Exists: true, Colony: msg.result.Colony}
 		m.state = stateMap
+		return m, nil
+	case bombardedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.result.Player
+		m.colony = query.ColonyStatus{Exists: true, Colony: msg.result.Colony}
+		m.bombardReport = describeBombardResult(msg.result)
+		m.state = stateMap
+		return m, nil
+	case invadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateError
+			return m, nil
+		}
+		m.player = msg.result.Player
+		m.colony = query.ColonyStatus{Exists: true, Colony: msg.result.Colony}
+		m.invadeResult = msg.result
+		m.bombardReport = ""
+		m.state = stateInvade
 		return m, nil
 	case coloniesLoadedMsg:
 		if msg.err != nil {
@@ -465,6 +503,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleEspionageTargetKey(msg)
 	case stateEncounter:
 		return m.handleEncounterKey(msg)
+	case stateInvade:
+		return m.handleInvadeKey(msg)
 	case stateHelp:
 		m.state = m.helpFrom
 		return m, nil
@@ -637,6 +677,18 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.afterWork = stateMap
 		m.state = stateWorking
 		return m, m.repairShipCmd()
+	case "b":
+		if !m.colony.Exists || m.colony.Colony.Owner == query.OwnerPlayer {
+			return m, nil
+		}
+		m.state = stateWorking
+		return m, m.bombardCmd()
+	case "i":
+		if !m.colony.Exists || m.colony.Colony.Owner == query.OwnerPlayer {
+			return m, nil
+		}
+		m.state = stateWorking
+		return m, m.invadeCmd()
 	case "q":
 		return m, tea.Quit
 	}
@@ -815,6 +867,20 @@ func (m Model) handleEncounterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.state = stateWorking
 		return m, m.resolveEncounterCmd(m.encounterHostile, true)
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// handleInvadeKey handles the invasion result screen: since the player
+// already committed to the fight by pressing i on the map, there is no
+// pre-fight phase to gate on, unlike stateEncounter.
+func (m Model) handleInvadeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "esc":
+		m.state = stateMap
+		return m, nil
 	case "q":
 		return m, tea.Quit
 	}
@@ -1095,6 +1161,28 @@ func (m Model) colonizeCmd(focus query.CommodityID) tea.Cmd {
 	}
 }
 
+func (m Model) bombardCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.Bombard{})
+		if err != nil {
+			return bombardedMsg{err: err}
+		}
+		return bombardedMsg{result: res.(query.BombardResult)}
+	}
+}
+
+func (m Model) invadeCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Execute(context.Background(), command.Invade{})
+		if err != nil {
+			return invadedMsg{err: err}
+		}
+		return invadedMsg{result: res.(query.InvadeResult)}
+	}
+}
+
 func (m Model) loadColoniesCmd() tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
@@ -1179,6 +1267,16 @@ func describeMissionResult(res query.MissionResult) string {
 	default:
 		return "Mission complete."
 	}
+}
+
+// describeBombardResult renders a one-line report of an orbital
+// bombardment, in the companion's voice.
+func describeBombardResult(res query.BombardResult) string {
+	name := res.Colony.Owner
+	if f, ok := query.FindFaction(res.Colony.Owner); ok {
+		name = f.Name
+	}
+	return companion.BombardReport(name, res.Colony.Garrison.Hull, res.Colony.Garrison.MaxHull, res.PopulationLost)
 }
 
 // describeCombatResult renders a one-line report of a resolved encounter.
@@ -1293,6 +1391,8 @@ func (m Model) View() string {
 		return m.viewEspionageTarget()
 	case stateEncounter:
 		return m.viewEncounter()
+	case stateInvade:
+		return m.viewInvade()
 	case stateHelp:
 		return m.viewHelp()
 	case stateError:
@@ -1379,10 +1479,20 @@ func (m Model) viewMap() string {
 		}
 	}
 
-	if m.colony.Exists {
+	rivalColonyHere := m.colony.Exists && m.colony.Colony.Owner != query.OwnerPlayer
+	if m.colony.Exists && !rivalColonyHere {
 		c, _ := query.FindCommodity(m.colony.Colony.Focus)
 		cap := query.ColonyPopulationCap(cur.DevelopmentLevel)
 		s += style.Faint.Render(fmt.Sprintf("Colony here: population %d/%d, producing %s.", m.colony.Colony.Population, cap, c.Name)) + "\n\n"
+	} else if rivalColonyHere {
+		name := m.colony.Colony.Owner
+		if f, ok := query.FindFaction(m.colony.Colony.Owner); ok {
+			name = f.Name
+		}
+		g := m.colony.Colony.Garrison
+		s += style.Selected.Render(fmt.Sprintf(
+			"This system belongs to the %s: population %d, garrison %d/%d hull (atk %d, def %d). Press b to bombard, i to invade.",
+			name, m.colony.Colony.Population, g.Hull, g.MaxHull, g.Attack, g.Defense)) + "\n\n"
 	} else {
 		cost := query.ColonizeCost(cur.DevelopmentLevel)
 		shortfall := cost - m.player.Credits
@@ -1394,6 +1504,9 @@ func (m Model) viewMap() string {
 
 	if m.scoutReport != "" {
 		s += style.Faint.Render(m.scoutReport) + "\n\n"
+	}
+	if m.bombardReport != "" {
+		s += style.Faint.Render(m.bombardReport) + "\n\n"
 	}
 
 	neighbors := m.galaxy.Neighbors(m.player.NodeID)
@@ -1423,7 +1536,12 @@ func (m Model) viewMap() string {
 		}
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, h to repair, esc to menu, ? for help, q to quit")
+	footer := "up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, h to repair"
+	if rivalColonyHere {
+		footer += ", b to bombard, i to invade"
+	}
+	footer += ", esc to menu, ? for help, q to quit"
+	s += "\n" + style.Faint.Render(footer)
 	return s
 }
 
@@ -1577,6 +1695,32 @@ func (m Model) viewEncounter() string {
 	return s
 }
 
+func (m Model) viewInvade() string {
+	res := m.invadeResult
+	cur, _ := m.galaxy.Node(m.player.NodeID)
+	name := res.Defender
+	if f, ok := query.FindFaction(res.Defender); ok {
+		name = f.Name
+	}
+
+	s := style.Title.Render("Invasion Report") + "\n\n"
+	switch {
+	case res.Captured:
+		s += companion.InvasionVictory(cur.Name, name) + "\n\n"
+	case res.Battle.Outcome == query.CombatDefeat:
+		s += fmt.Sprintf("The %s Garrison repelled the assault. Your ship limps away.\n\n", name)
+	default:
+		s += fmt.Sprintf("The %s Garrison held — the invasion breaks off.\n\n", name)
+	}
+	if len(res.Battle.Log) > 0 {
+		s += strings.Join(res.Battle.Log, "\n") + "\n\n"
+	}
+	s += fmt.Sprintf("Ship: Attack %d, Defense %d, Hull %d/%d   Credits: %d cr\n\n",
+		m.player.Ship.Attack, m.player.Ship.Defense, m.player.Ship.Hull, m.player.Ship.MaxHull, m.player.Credits)
+	s += style.Faint.Render("enter to continue")
+	return s
+}
+
 func (m Model) viewTrade() string {
 	cur, _ := m.galaxy.Node(m.player.NodeID)
 	s := style.Title.Render("Trade — "+cur.Name) + "\n\n"
@@ -1658,7 +1802,7 @@ func helpText(s state) string {
 	case stateLoadList:
 		return "Your saved games, most recently played first. Pick one and press enter to load it."
 	case stateMap:
-		return "Your current system and the warp lanes leading out of it. Fly to a neighboring system, scout an undiscovered one without committing to the flight, trade, found or check on colonies, research tech, run espionage, or repair a damaged hull."
+		return "Your current system and the warp lanes leading out of it. Fly to a neighboring system, scout an undiscovered one without committing to the flight, trade, found or check on colonies, research tech, run espionage, repair a damaged hull, or — if a rival faction holds this system — bombard its garrison from orbit or invade to capture it."
 	case stateTrade:
 		return "The local market. Buy or sell a commodity — you'll then haggle over the price before the deal is done."
 	case stateHaggle:
@@ -1675,6 +1819,8 @@ func helpText(s state) string {
 		return "Choose a mission target and mission type: steal credits, sabotage, or gather intel."
 	case stateEncounter:
 		return "A hostile has intercepted you. Fight it out, or attempt to flee (not guaranteed to succeed)."
+	case stateInvade:
+		return "The result of an invasion attempt against a rival faction's colony garrison."
 	default:
 		return "No help is available for this screen."
 	}

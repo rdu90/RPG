@@ -11,6 +11,8 @@ import (
 
 	"github.com/rdu90/RPG/internal/config"
 	"github.com/rdu90/RPG/internal/engine"
+	"github.com/rdu90/RPG/internal/engine/colony"
+	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/persistence/sqlite"
 	"github.com/rdu90/RPG/internal/transport/local"
 	"github.com/rdu90/RPG/internal/transport/query"
@@ -827,5 +829,151 @@ func TestColonyHintReflectsAffordability(t *testing.T) {
 
 	if !strings.Contains(m.View(), "whenever you're ready") {
 		t.Fatalf("expected the affordable colony hint once credits suffice, got:\n%s", m.View())
+	}
+}
+
+func TestBombardAndInvadeKeysAreNoOpsWithoutRivalColony(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	beforeCredits := m.player.Credits
+	beforeTurns := m.player.Turns.Remaining
+	m = key(t, m, "b")
+	if m.state != stateMap || m.player.Credits != beforeCredits || m.player.Turns.Remaining != beforeTurns {
+		t.Fatalf("expected b to be a no-op with no colony here, got state=%v", m.state)
+	}
+	m = key(t, m, "i")
+	if m.state != stateMap || m.player.Credits != beforeCredits || m.player.Turns.Remaining != beforeTurns {
+		t.Fatalf("expected i to be a no-op with no colony here, got state=%v", m.state)
+	}
+}
+
+func TestRivalColonyViewShowsFactionAndBombardInvadeHint(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	m.colony = query.ColonyStatus{Exists: true, Colony: query.Colony{
+		NodeID:     m.player.NodeID,
+		Owner:      "crimson-hand",
+		Population: 300,
+		Garrison:   query.ShipStats{Attack: 10, Defense: 5, Hull: 40, MaxHull: 80},
+	}}
+
+	view := m.View()
+	if !strings.Contains(view, "Crimson Hand") {
+		t.Fatalf("expected the rival faction's name on the map, got:\n%s", view)
+	}
+	if !strings.Contains(view, "b to bombard") || !strings.Contains(view, "i to invade") {
+		t.Fatalf("expected bombard/invade hints, got:\n%s", view)
+	}
+	if strings.Contains(view, "Colony here: population") {
+		t.Fatalf("expected the player-owned colony line to be suppressed for a rival colony, got:\n%s", view)
+	}
+}
+
+func TestBombardWeakensGarrisonThenInvadeCapturesColony(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(config.SavePath(dir, "alpha"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	openSave := func(name string) (*local.Client, error) {
+		return local.New(engine.New(store)), nil
+	}
+	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	ctx := context.Background()
+	p, err := store.GetPlayer(ctx)
+	if err != nil {
+		t.Fatalf("get player: %v", err)
+	}
+	p.Ship = fleet.Stats{Attack: 100, Defense: 100, Hull: 200, MaxHull: 200}
+	if err := store.SavePlayer(ctx, p); err != nil {
+		t.Fatalf("save player: %v", err)
+	}
+	m.player.Ship = p.Ship
+
+	rival := colony.Colony{
+		NodeID:     p.NodeID,
+		Focus:      "food",
+		Population: 500,
+		LastTickAt: p.Turns.LastRefillAt,
+		Owner:      "crimson-hand",
+		Garrison:   fleet.Stats{Attack: 5, Defense: 2, Hull: 100, MaxHull: 100},
+	}
+	if err := store.SaveColony(ctx, rival); err != nil {
+		t.Fatalf("save rival colony: %v", err)
+	}
+	m.colony = query.ColonyStatus{Exists: true, Colony: query.Colony(rival)}
+
+	m = key(t, m, "b")
+	if m.state != stateMap {
+		t.Fatalf("expected bombard to return to stateMap, got %v (err=%v)", m.state, m.err)
+	}
+	if m.colony.Colony.Owner == query.OwnerPlayer {
+		t.Fatal("expected bombardment alone to not capture the colony")
+	}
+	if m.colony.Colony.Garrison.Hull >= 100 {
+		t.Fatalf("expected bombardment to weaken the garrison, got hull %d/100", m.colony.Colony.Garrison.Hull)
+	}
+	if m.bombardReport == "" {
+		t.Fatal("expected a bombard report to be set")
+	}
+
+	m = key(t, m, "i")
+	if m.state != stateInvade {
+		t.Fatalf("expected stateInvade after invading, got %v (err=%v)", m.state, m.err)
+	}
+	view := m.View()
+	if !strings.Contains(view, "fallen") {
+		t.Fatalf("expected the invasion victory report, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Crimson Hand") || strings.Contains(view, "player's garrison") {
+		t.Fatalf("expected the victory report to name the defeated faction, not the player, got:\n%s", view)
+	}
+	if m.colony.Colony.Owner != query.OwnerPlayer {
+		t.Fatalf("expected the colony to now belong to the player, got owner %q", m.colony.Colony.Owner)
+	}
+
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected enter to return to the map, got %v", m.state)
+	}
+
+	m = key(t, m, "o")
+	if m.state != stateColonies {
+		t.Fatalf("expected stateColonies, got %v (err=%v)", m.state, m.err)
+	}
+	if !strings.Contains(m.View(), "Food Rations") {
+		t.Fatalf("expected the captured colony to appear in the player's colony list, got:\n%s", m.View())
 	}
 }

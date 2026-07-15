@@ -55,3 +55,12 @@ type ResolveEncounter = engine.ResolveEncounter
 // RepairShip restores the player's ship to full hull for a credit cost
 // proportional to the damage repaired.
 type RepairShip = engine.RepairShip
+
+// Bombard strikes the rival-faction colony at the player's current system
+// from orbit, weakening its garrison and population without risking the
+// player's ship.
+type Bombard = engine.Bombard
+
+// Invade attempts to capture the rival-faction colony at the player's
+// current system by fighting its garrison to a conclusion.
+type Invade = engine.Invade

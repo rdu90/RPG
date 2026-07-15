@@ -27,6 +27,21 @@ func ColonyHint(canAfford bool, cost, turns, shortfall int) string {
 		cost, turns, shortfall)
 }
 
+// BombardReport describes the aftermath of an orbital bombardment against a
+// rival faction's colony.
+func BombardReport(factionName string, garrisonHull, garrisonMaxHull, populationLost int) string {
+	return fmt.Sprintf(
+		"A fine volley, sir. The %s's defenses stand at %d/%d, and we've cost them %d souls on the ground.",
+		factionName, garrisonHull, garrisonMaxHull, populationLost)
+}
+
+// InvasionVictory announces the capture of a rival faction's colony.
+func InvasionVictory(colonyName, factionName string) string {
+	return fmt.Sprintf(
+		"Splendid work, sir — %s has fallen. The %s's garrison has stood down, and the colony is yours to administer.",
+		colonyName, factionName)
+}
+
 // AlreadyInvestigated reports that the player has already investigated the
 // anomaly of the given kind at their current system. kind is typically an
 // explore.Kind, accepted here as a Stringer so this package doesn't need to

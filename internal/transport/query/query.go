@@ -11,6 +11,7 @@ import (
 	"github.com/rdu90/RPG/internal/engine/economy"
 	"github.com/rdu90/RPG/internal/engine/espionage"
 	"github.com/rdu90/RPG/internal/engine/explore"
+	"github.com/rdu90/RPG/internal/engine/faction"
 	"github.com/rdu90/RPG/internal/engine/fleet"
 	"github.com/rdu90/RPG/internal/engine/galaxy"
 	"github.com/rdu90/RPG/internal/engine/haggle"
@@ -250,3 +251,22 @@ func EncounterChance(developmentLevel int) float64 { return combat.EncounterChan
 // RepairCostPerHull is the credit price of restoring one point of hull
 // damage.
 const RepairCostPerHull = engine.RepairCostPerHull
+
+// OwnerPlayer is the sentinel Owner value for a colony founded by the
+// player, as opposed to a rival faction.
+const OwnerPlayer = colony.OwnerPlayer
+
+// Faction is a rival power capable of owning a colony.
+type Faction = faction.Faction
+
+// FindFaction looks up a faction definition by ID.
+func FindFaction(id string) (Faction, bool) { return faction.Find(id) }
+
+// BombardResult is the result of a Bombard command: the weakened colony,
+// alongside the player's current state.
+type BombardResult = engine.BombardResult
+
+// InvadeResult is the result of an Invade command: the resolved ground
+// battle against a colony's garrison, and the colony's state afterward —
+// captured if the battle was won.
+type InvadeResult = engine.InvadeResult

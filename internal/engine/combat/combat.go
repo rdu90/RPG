@@ -52,6 +52,13 @@ const (
 	hostileBaseHull   = 30
 	hostileHullPerDev = 10
 	hostileHullJitter = 10
+
+	// garrisonAttackMultiplier etc. scale a colony's defensive garrison up
+	// from the equivalent wandering Hostile stats: a fortified position is
+	// tougher than a raider caught in open space.
+	garrisonAttackMultiplier  = 1.25
+	garrisonDefenseMultiplier = 1.5
+	garrisonHullMultiplier    = 2.0
 )
 
 // EncounterChance returns the odds of meeting a hostile on arrival at a
@@ -73,6 +80,20 @@ func Generate(r *rand.Rand, seed int64, developmentLevel int) Hostile {
 		Name:    hostileNames[r.IntN(len(hostileNames))],
 		Attack:  hostileBaseAttack + developmentLevel*hostileAttackPerDev + r.IntN(hostileAttackJitter+1),
 		Defense: hostileBaseDefense + developmentLevel*hostileDefensePerDev + r.IntN(hostileDefenseJitter+1),
+		Hull:    maxHull,
+		MaxHull: maxHull,
+	}
+}
+
+// GenerateGarrison rolls a fresh defensive garrison for a colony at a
+// system of the given development level, fortified above the equivalent
+// wandering Hostile of the same development level.
+func GenerateGarrison(r *rand.Rand, developmentLevel int) fleet.Stats {
+	h := Generate(r, 0, developmentLevel)
+	maxHull := int(float64(h.MaxHull) * garrisonHullMultiplier)
+	return fleet.Stats{
+		Attack:  int(float64(h.Attack) * garrisonAttackMultiplier),
+		Defense: int(float64(h.Defense) * garrisonDefenseMultiplier),
 		Hull:    maxHull,
 		MaxHull: maxHull,
 	}
