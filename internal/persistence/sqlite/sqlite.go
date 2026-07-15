@@ -36,6 +36,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: ping %s: %w", path, err)
 	}
 
+	goose.SetLogger(goose.NopLogger())
 	goose.SetBaseFS(migrations.FS)
 	defer goose.SetBaseFS(nil)
 

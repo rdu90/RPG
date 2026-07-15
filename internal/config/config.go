@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const saveExt = ".db"
@@ -33,19 +34,32 @@ func SavePath(dir, name string) string {
 	return filepath.Join(dir, name+saveExt)
 }
 
-// ListSaves returns the names of existing saves in dir, sorted alphabetically.
+// ListSaves returns the names of existing saves in dir, most-recently
+// modified first.
 func ListSaves(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	var saves []string
+	type save struct {
+		name    string
+		modTime time.Time
+	}
+	var saves []save
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), saveExt) {
 			continue
 		}
-		saves = append(saves, strings.TrimSuffix(e.Name(), saveExt))
+		info, err := e.Info()
+		if err != nil {
+			return nil, err
+		}
+		saves = append(saves, save{name: strings.TrimSuffix(e.Name(), saveExt), modTime: info.ModTime()})
 	}
-	sort.Strings(saves)
-	return saves, nil
+	sort.Slice(saves, func(i, j int) bool { return saves[i].modTime.After(saves[j].modTime) })
+	names := make([]string, len(saves))
+	for i, s := range saves {
+		names[i] = s.name
+	}
+	return names, nil
 }

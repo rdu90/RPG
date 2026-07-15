@@ -91,11 +91,26 @@ func typeString(t *testing.T, m Model, s string) Model {
 	return m
 }
 
+// dismissTitle presses any key to advance past the opening title screen,
+// landing on the main menu.
+func dismissTitle(t *testing.T, m Model) Model {
+	t.Helper()
+	if m.state != stateTitle {
+		t.Fatalf("expected stateTitle, got %v", m.state)
+	}
+	m = key(t, m, "enter")
+	if m.state != stateMenu {
+		t.Fatalf("expected stateMenu after dismissing title, got %v", m.state)
+	}
+	return m
+}
+
 func TestNewGameEntersGalaxyMap(t *testing.T) {
 	openSave, listSaves, cleanup := newTestHooks(t)
 	defer cleanup()
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	if !strings.Contains(m.View(), "New Game") {
 		t.Fatalf("expected menu to list New Game, got:\n%s", m.View())
 	}
@@ -130,6 +145,7 @@ func TestFlyAndHaggleRoundTrip(t *testing.T) {
 	defer cleanup()
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "alpha")
 	m = key(t, m, "enter")
@@ -220,6 +236,7 @@ func TestFlyAndHaggleRoundTrip(t *testing.T) {
 	// Simulate a fresh process: new Model over the same save directory,
 	// confirming position, turns, and credits all persisted.
 	m2 := New(openSave, listSaves)
+	m2 = dismissTitle(t, m2)
 	m2 = key(t, m2, "down") // move cursor to "Load Game"
 	m2 = key(t, m2, "enter")
 	if m2.state != stateLoadList {
@@ -249,6 +266,7 @@ func TestScoutRevealsSystemAtHalfTurnCost(t *testing.T) {
 	defer cleanup()
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "alpha")
 	m = key(t, m, "enter")
@@ -301,6 +319,7 @@ func TestClaimAnomalyAtStartingSystem(t *testing.T) {
 	found := false
 	for i := 0; i < 40 && !found; i++ {
 		m = New(openSave, listSaves)
+		m = dismissTitle(t, m)
 		m = key(t, m, "enter") // New Game
 		m = typeString(t, m, fmt.Sprintf("save%d", i))
 		m = key(t, m, "enter")
@@ -352,6 +371,7 @@ func TestColonizeFoundsColonyFromMap(t *testing.T) {
 	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "alpha")
 	m = key(t, m, "enter")
@@ -361,7 +381,7 @@ func TestColonizeFoundsColonyFromMap(t *testing.T) {
 	if m.colony.Exists {
 		t.Fatal("expected no colony at the freshly-created starting system")
 	}
-	if !strings.Contains(m.View(), "No colony here") {
+	if !strings.Contains(m.View(), "A colony could be founded here") {
 		t.Fatalf("expected the map to show no-colony hint, got:\n%s", m.View())
 	}
 
@@ -432,6 +452,7 @@ func TestResearchTechFromMap(t *testing.T) {
 	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "alpha")
 	m = key(t, m, "enter")
@@ -517,6 +538,7 @@ func TestEspionageRecruitAndSendMissionFromMap(t *testing.T) {
 	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "alpha")
 	m = key(t, m, "enter")
@@ -615,6 +637,7 @@ func TestHostileEncounterFightResolvesAndReturnsToMap(t *testing.T) {
 	defer cleanup()
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "encounter-fight")
 	m = key(t, m, "enter")
@@ -649,6 +672,7 @@ func TestHostileEncounterFleeResolvesAndReturnsToMap(t *testing.T) {
 	defer cleanup()
 
 	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
 	m = key(t, m, "enter") // New Game
 	m = typeString(t, m, "encounter-flee")
 	m = key(t, m, "enter")
@@ -669,5 +693,139 @@ func TestHostileEncounterFleeResolvesAndReturnsToMap(t *testing.T) {
 	m = key(t, m, "enter") // acknowledge the report
 	if m.state != stateMap {
 		t.Fatalf("expected esc/enter to return to the map, got %v (err=%v)", m.state, m.err)
+	}
+}
+
+func TestTitleScreenShowsLoreAndSaveHintThenDismisses(t *testing.T) {
+	openSave, listSaves, _ := newTestHooks(t)
+
+	m := New(openSave, listSaves)
+	if !strings.Contains(m.View(), "saves automatically") {
+		t.Fatalf("expected the title screen to explain the save model, got:\n%s", m.View())
+	}
+	m = dismissTitle(t, m)
+	if !strings.Contains(m.View(), "New Game") {
+		t.Fatalf("expected the menu after dismissing the title, got:\n%s", m.View())
+	}
+}
+
+func TestEscFromMapOffersResumeAndReturnsUnchanged(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+	wantNode := m.player.NodeID
+
+	m = key(t, m, "esc")
+	if m.state != stateMenu {
+		t.Fatalf("expected stateMenu after esc, got %v", m.state)
+	}
+	if !strings.Contains(m.View(), "Resume") {
+		t.Fatalf("expected Resume to be offered once a game is loaded, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "enter") // Resume is the default (first) selection
+	if m.state != stateMap {
+		t.Fatalf("expected Resume to return to stateMap, got %v", m.state)
+	}
+	if m.player.NodeID != wantNode {
+		t.Fatalf("expected resuming to leave the player where they were, got %s want %s", m.player.NodeID, wantNode)
+	}
+}
+
+func TestHelpScreenFromMapReturnsToMap(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	m = key(t, m, "?")
+	if m.state != stateHelp {
+		t.Fatalf("expected stateHelp, got %v", m.state)
+	}
+	if !strings.Contains(m.View(), "warp lanes") {
+		t.Fatalf("expected map help text, got:\n%s", m.View())
+	}
+
+	m = key(t, m, "x") // any key dismisses help
+	if m.state != stateMap {
+		t.Fatalf("expected help to return to stateMap, got %v", m.state)
+	}
+}
+
+func TestUnexploredLaneLabelDoesNotUseQuestionMarks(t *testing.T) {
+	openSave, listSaves, cleanup := newTestHooks(t)
+	defer cleanup()
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+
+	view := m.View()
+	if strings.Contains(view, "???") {
+		t.Fatalf("expected no ??? placeholder for unexplored lanes, got:\n%s", view)
+	}
+	if !strings.Contains(view, "unexplored") {
+		t.Fatalf("expected an unexplored-lane label, got:\n%s", view)
+	}
+}
+
+func TestColonyHintReflectsAffordability(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(config.SavePath(dir, "alpha"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	openSave := func(name string) (*local.Client, error) {
+		return local.New(engine.New(store)), nil
+	}
+	listSaves := func() ([]string, error) { return config.ListSaves(dir) }
+
+	m := New(openSave, listSaves)
+	m = dismissTitle(t, m)
+	m = key(t, m, "enter") // New Game
+	m = typeString(t, m, "alpha")
+	m = key(t, m, "enter")
+	if m.state != stateMap {
+		t.Fatalf("expected stateMap, got %v (err=%v)", m.state, m.err)
+	}
+	if !strings.Contains(m.View(), "short by") {
+		t.Fatalf("expected the unaffordable colony hint to note the shortfall, got:\n%s", m.View())
+	}
+
+	ctx := context.Background()
+	p, err := store.GetPlayer(ctx)
+	if err != nil {
+		t.Fatalf("get player: %v", err)
+	}
+	p.Credits = 10000
+	if err := store.SavePlayer(ctx, p); err != nil {
+		t.Fatalf("save player: %v", err)
+	}
+	m.player.Credits = p.Credits
+
+	if !strings.Contains(m.View(), "whenever you're ready") {
+		t.Fatalf("expected the affordable colony hint once credits suffice, got:\n%s", m.View())
 	}
 }

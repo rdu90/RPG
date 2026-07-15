@@ -17,6 +17,7 @@ import (
 	"github.com/rdu90/RPG/internal/transport/command"
 	"github.com/rdu90/RPG/internal/transport/local"
 	"github.com/rdu90/RPG/internal/transport/query"
+	"github.com/rdu90/RPG/internal/tui/companion"
 	"github.com/rdu90/RPG/internal/tui/style"
 )
 
@@ -31,7 +32,8 @@ type ListSaves func() ([]string, error)
 type state int
 
 const (
-	stateMenu state = iota
+	stateTitle state = iota
+	stateMenu
 	stateNewGameInput
 	stateLoadList
 	stateWorking
@@ -44,6 +46,7 @@ const (
 	stateEspionage
 	stateEspionageTarget
 	stateEncounter
+	stateHelp
 	stateError
 )
 
@@ -151,8 +154,10 @@ type Model struct {
 	// afterWork is where a playerUpdatedMsg should land: stateMap after a
 	// move, stateTrade after a buy/sell.
 	afterWork state
+	// helpFrom is where "?" was pressed from, so stateHelp knows where to
+	// return.
+	helpFrom state
 
-	menuItems  []string
 	menuCursor int
 
 	nameInput  textinput.Model
@@ -219,12 +224,22 @@ func New(openSave OpenSave, listSaves ListSaves) Model {
 	return Model{
 		openSave:   openSave,
 		listSaves:  listSaves,
-		state:      stateMenu,
-		menuItems:  []string{"New Game", "Load Game", "Quit"},
+		state:      stateTitle,
 		nameInput:  ti,
 		qtyInput:   qty,
 		priceInput: price,
 	}
+}
+
+// menuOptions returns the main menu's items, offering "Resume" ahead of
+// "New Game"/"Load Game" whenever a save is already loaded — the menu is
+// reachable mid-game (e.g. via esc from the map) and shouldn't strand the
+// player with no way back to it.
+func (m Model) menuOptions() []string {
+	if m.client != nil {
+		return []string{"Resume", "New Game", "Load Game", "Quit"}
+	}
+	return []string{"New Game", "Load Game", "Quit"}
 }
 
 // Init implements tea.Model.
@@ -423,6 +438,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.state {
+	case stateTitle:
+		m.state = stateMenu
+		return m, nil
 	case stateMenu:
 		return m.handleMenuKey(msg)
 	case stateNewGameInput:
@@ -447,6 +465,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleEspionageTargetKey(msg)
 	case stateEncounter:
 		return m.handleEncounterKey(msg)
+	case stateHelp:
+		m.state = m.helpFrom
+		return m, nil
 	case stateError:
 		switch msg.String() {
 		case "esc":
@@ -461,17 +482,29 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	options := m.menuOptions()
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateMenu
+		m.state = stateHelp
+		return m, nil
+	case "esc":
+		if m.client != nil {
+			m.state = stateMap
+		}
+		return m, nil
 	case "up", "k":
 		if m.menuCursor > 0 {
 			m.menuCursor--
 		}
 	case "down", "j":
-		if m.menuCursor < len(m.menuItems)-1 {
+		if m.menuCursor < len(options)-1 {
 			m.menuCursor++
 		}
 	case "enter":
-		switch m.menuItems[m.menuCursor] {
+		switch options[m.menuCursor] {
+		case "Resume":
+			m.state = stateMap
 		case "New Game":
 			m.state = stateNewGameInput
 			m.nameInput.SetValue("")
@@ -508,6 +541,10 @@ func (m Model) handleNewGameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleLoadListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateLoadList
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateMenu
 		return m, nil
@@ -533,8 +570,13 @@ func (m Model) handleLoadListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	neighbors := m.galaxy.Neighbors(m.player.NodeID)
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateMap
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateMenu
+		m.menuCursor = 0
 		return m, nil
 	case "up", "k":
 		if m.mapCursor > 0 {
@@ -603,6 +645,10 @@ func (m Model) handleMapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleColonizeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateColonize
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateMap
 		return m, nil
@@ -626,6 +672,10 @@ func (m Model) handleColonizeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleColoniesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateColonies
+		m.state = stateHelp
+		return m, nil
 	case "esc", "enter":
 		m.state = stateMap
 		return m, nil
@@ -637,6 +687,10 @@ func (m Model) handleColoniesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleTechTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateTechTree
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateMap
 		return m, nil
@@ -667,6 +721,10 @@ func (m Model) handleTechTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleEspionageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := len(m.spies) + 1 // +1 for the "Recruit New Spy" row
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateEspionage
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateMap
 		return m, nil
@@ -699,6 +757,10 @@ func (m Model) handleEspionageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleEspionageTargetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateEspionageTarget
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateEspionage
 		return m, nil
@@ -743,6 +805,10 @@ func (m Model) handleEncounterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateEncounter
+		m.state = stateHelp
+		return m, nil
 	case "f":
 		m.state = stateWorking
 		return m, m.resolveEncounterCmd(m.encounterHostile, false)
@@ -785,6 +851,10 @@ func (m Model) handleTradeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateTrade
+		m.state = stateHelp
+		return m, nil
 	case "esc":
 		m.state = stateMap
 		return m, nil
@@ -855,6 +925,10 @@ func (m Model) handleHaggleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "?":
+		m.helpFrom = stateHaggle
+		m.state = stateHelp
+		return m, nil
 	case "o":
 		m.haggleOffering = true
 		m.haggleErr = nil
@@ -1191,6 +1265,8 @@ func (m Model) haggleAcceptCmd() tea.Cmd {
 // View implements tea.Model.
 func (m Model) View() string {
 	switch m.state {
+	case stateTitle:
+		return m.viewTitle()
 	case stateMenu:
 		return m.viewMenu()
 	case stateNewGameInput:
@@ -1217,28 +1293,50 @@ func (m Model) View() string {
 		return m.viewEspionageTarget()
 	case stateEncounter:
 		return m.viewEncounter()
+	case stateHelp:
+		return m.viewHelp()
 	case stateError:
 		return m.viewError()
 	}
 	return ""
 }
 
+// saveHint tells the player how saving works, since there's no explicit
+// save command to discover on their own.
+const saveHint = "Progress saves automatically after every action — there's no separate save command."
+
+func (m Model) viewTitle() string {
+	s := style.Title.Render("RPG") + "\n\n"
+	s += "A ragtag band of survivors, scattered across the stars.\n\n"
+	s += "Explore uncharted systems, expand your reach with colonies, exploit the\n"
+	s += "galaxy's economy and technology, and — if it comes to it — exterminate\n"
+	s += "whatever stands between you and a galaxy-spanning empire.\n\n"
+	s += style.Faint.Render(saveHint) + "\n\n"
+	s += style.Faint.Render("press any key to begin")
+	return s
+}
+
 func (m Model) viewMenu() string {
 	s := style.Title.Render("RPG") + "\n\n"
-	for i, item := range m.menuItems {
+	for i, item := range m.menuOptions() {
 		if i == m.menuCursor {
 			s += style.Selected.Render("> "+item) + "\n"
 		} else {
 			s += "  " + item + "\n"
 		}
 	}
-	s += "\n" + style.Faint.Render("up/down to move, enter to select, q to quit")
+	if m.client != nil {
+		s += "\n" + style.Faint.Render("up/down to move, enter to select, esc to resume, ? for help, q to quit")
+	} else {
+		s += "\n" + style.Faint.Render("up/down to move, enter to select, ? for help, q to quit")
+	}
 	return s
 }
 
 func (m Model) viewNewGameInput() string {
 	s := style.Title.Render("New Game") + "\n\n"
 	s += "Save name: " + m.nameInput.View() + "\n\n"
+	s += style.Faint.Render(saveHint) + "\n\n"
 	s += style.Faint.Render("enter to confirm, esc to cancel")
 	return s
 }
@@ -1255,7 +1353,8 @@ func (m Model) viewLoadList() string {
 			s += "  " + name + "\n"
 		}
 	}
-	s += "\n" + style.Faint.Render("up/down to move, enter to load, esc to cancel")
+	s += "\n" + style.Faint.Render(saveHint) + "\n"
+	s += style.Faint.Render("up/down to move, enter to load, esc to cancel, ? for help")
 	return s
 }
 
@@ -1274,7 +1373,7 @@ func (m Model) viewMap() string {
 
 	if !m.anomaly.Anomaly.Empty() {
 		if m.anomaly.Claimed {
-			s += style.Faint.Render(fmt.Sprintf("The %s here has already been investigated.", m.anomaly.Anomaly.Kind)) + "\n\n"
+			s += style.Faint.Render(companion.AlreadyInvestigated(m.anomaly.Anomaly.Kind)) + "\n\n"
 		} else {
 			s += style.Selected.Render(fmt.Sprintf("Sensors detect a %s here! Press c to investigate.", m.anomaly.Anomaly.Kind)) + "\n\n"
 		}
@@ -1285,8 +1384,16 @@ func (m Model) viewMap() string {
 		cap := query.ColonyPopulationCap(cur.DevelopmentLevel)
 		s += style.Faint.Render(fmt.Sprintf("Colony here: population %d/%d, producing %s.", m.colony.Colony.Population, cap, c.Name)) + "\n\n"
 	} else {
-		s += style.Faint.Render(fmt.Sprintf("No colony here. Press p to found one (%d cr, %d turns).",
-			query.ColonizeCost(cur.DevelopmentLevel), query.ColonizeTurnCost)) + "\n\n"
+		cost := query.ColonizeCost(cur.DevelopmentLevel)
+		shortfall := cost - m.player.Credits
+		if shortfall < 0 {
+			shortfall = 0
+		}
+		s += style.Faint.Render(companion.ColonyHint(m.player.Credits >= cost, cost, query.ColonizeTurnCost, shortfall)) + "\n\n"
+	}
+
+	if m.scoutReport != "" {
+		s += style.Faint.Render(m.scoutReport) + "\n\n"
 	}
 
 	neighbors := m.galaxy.Neighbors(m.player.NodeID)
@@ -1307,7 +1414,7 @@ func (m Model) viewMap() string {
 			n, _ := m.galaxy.Node(e.To)
 			line = fmt.Sprintf("%s (%d turn%s, dev %d)", n.Name, e.TurnCost, plural(e.TurnCost), n.DevelopmentLevel)
 		} else {
-			line = fmt.Sprintf("??? (%d turn%s, unexplored — x to scout)", e.TurnCost, plural(e.TurnCost))
+			line = fmt.Sprintf("(unexplored, %d turn%s — x to scout)", e.TurnCost, plural(e.TurnCost))
 		}
 		if i == m.mapCursor {
 			s += style.Selected.Render("> "+line) + "\n"
@@ -1316,11 +1423,7 @@ func (m Model) viewMap() string {
 		}
 	}
 
-	if m.scoutReport != "" {
-		s += "\n" + style.Faint.Render(m.scoutReport) + "\n"
-	}
-
-	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, h to repair, esc to menu, q to quit")
+	s += "\n" + style.Faint.Render("up/down select, enter to fly, x to scout, t to trade, p to found colony, o for colonies, r for research, e for espionage, h to repair, esc to menu, ? for help, q to quit")
 	return s
 }
 
@@ -1345,7 +1448,7 @@ func (m Model) viewColonize() string {
 		s += "\n" + style.ErrorText.Render(m.colonizeErr.Error()) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to found, esc to cancel")
+	s += "\n" + style.Faint.Render("up/down select, enter to found, esc to cancel, ? for help")
 	return s
 }
 
@@ -1360,7 +1463,7 @@ func (m Model) viewColonies() string {
 		cap := query.ColonyPopulationCap(n.DevelopmentLevel)
 		s += fmt.Sprintf("  %-15s population %5d/%-5d producing %s\n", n.Name, col.Population, cap, c.Name)
 	}
-	s += "\n" + style.Faint.Render("esc to return to the map")
+	s += "\n" + style.Faint.Render("esc to return to the map, ? for help")
 	return s
 }
 
@@ -1396,7 +1499,7 @@ func (m Model) viewTechTree() string {
 		}
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to research (switching projects resets progress), esc back")
+	s += "\n" + style.Faint.Render("up/down select, enter to research (switching projects resets progress), esc back, ? for help")
 	return s
 }
 
@@ -1423,7 +1526,7 @@ func (m Model) viewEspionage() string {
 		s += "  " + recruitLine + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select, enter to recruit or choose a spy's target, esc back")
+	s += "\n" + style.Faint.Render("up/down select, enter to recruit or choose a spy's target, esc back, ? for help")
 	return s
 }
 
@@ -1448,7 +1551,7 @@ func (m Model) viewEspionageTarget() string {
 		s += "\n" + style.Faint.Render(m.missionReport) + "\n"
 	}
 
-	s += "\n" + style.Faint.Render("up/down select target, s to steal, a to sabotage, i for intel, esc back")
+	s += "\n" + style.Faint.Render("up/down select target, s to steal, a to sabotage, i for intel, esc back, ? for help")
 	return s
 }
 
@@ -1470,7 +1573,7 @@ func (m Model) viewEncounter() string {
 	s += fmt.Sprintf("A %s approaches! Attack %d, Defense %d, Hull %d/%d\n\n", h.Name, h.Attack, h.Defense, h.Hull, h.MaxHull)
 	s += fmt.Sprintf("Your ship: Attack %d, Defense %d, Hull %d/%d\n\n",
 		m.player.Ship.Attack, m.player.Ship.Defense, m.player.Ship.Hull, m.player.Ship.MaxHull)
-	s += style.Faint.Render("f to fight, r to attempt to flee, q to quit")
+	s += style.Faint.Render("f to fight, r to attempt to flee, ? for help, q to quit")
 	return s
 }
 
@@ -1502,7 +1605,7 @@ func (m Model) viewTrade() string {
 	}
 
 	s += "\n" + style.Faint.Render("prices shown are reference only, ~ marks the market rate\n")
-	s += style.Faint.Render("up/down select, b negotiate buying, s negotiate selling, esc back")
+	s += style.Faint.Render("up/down select, b negotiate buying, s negotiate selling, esc back, ? for help")
 	return s
 }
 
@@ -1542,8 +1645,46 @@ func (m Model) viewHaggle() string {
 	if m.haggleErr != nil {
 		body += style.ErrorText.Render(m.haggleErr.Error()) + "\n\n"
 	}
-	body += style.Faint.Render("o to counter-offer, w to walk away (bluff), a to accept, esc to abandon, q to quit")
+	body += style.Faint.Render("o to counter-offer, w to walk away (bluff), a to accept, esc to abandon, ? for help, q to quit")
 	return body
+}
+
+// helpText returns a plain-language explanation of the given screen and its
+// keys, shown by stateHelp.
+func helpText(s state) string {
+	switch s {
+	case stateMenu:
+		return "The main menu. Resume returns to your loaded game (only shown once one is loaded), New Game creates a fresh save, Load Game opens an existing one."
+	case stateLoadList:
+		return "Your saved games, most recently played first. Pick one and press enter to load it."
+	case stateMap:
+		return "Your current system and the warp lanes leading out of it. Fly to a neighboring system, scout an undiscovered one without committing to the flight, trade, found or check on colonies, research tech, run espionage, or repair a damaged hull."
+	case stateTrade:
+		return "The local market. Buy or sell a commodity — you'll then haggle over the price before the deal is done."
+	case stateHaggle:
+		return "A price negotiation. Counter-offer, walk away and hope for a better follow-up offer, or accept the current price."
+	case stateColonize:
+		return "Found a colony at your current system, choosing which commodity it focuses on producing."
+	case stateColonies:
+		return "A list of the colonies you've founded across the galaxy and their status."
+	case stateTechTree:
+		return "The technology tree. Each branch is a linear chain of tiers — start research on the next available tech in a branch to begin accruing progress toward it over time."
+	case stateEspionage:
+		return "Your spies. Recruit a new one for a flat cost, or select an available spy to send on a mission."
+	case stateEspionageTarget:
+		return "Choose a mission target and mission type: steal credits, sabotage, or gather intel."
+	case stateEncounter:
+		return "A hostile has intercepted you. Fight it out, or attempt to flee (not guaranteed to succeed)."
+	default:
+		return "No help is available for this screen."
+	}
+}
+
+func (m Model) viewHelp() string {
+	s := style.Title.Render("Help") + "\n\n"
+	s += helpText(m.helpFrom) + "\n\n"
+	s += style.Faint.Render("press any key to return")
+	return s
 }
 
 func (m Model) viewError() string {
