@@ -55,3 +55,7 @@ Run a single test: `go test ./internal/tui/app/... -run TestName -v`
 **Turn/tick model (load-bearing design decision, see PLAN.md for full rationale):** turn allowances and the galaxy tick are computed lazily from timestamps on read ("advance N ticks since last seen"), not driven by a background scheduler. This makes the exact same resolution code work for both a local single-player SQLite file and a future shared server, so multiplayer becomes a transport + auth addition later rather than a concurrency-model rewrite.
 
 **When adding gameplay to an empty `internal/engine/*` subpackage:** keep it pure domain logic with no I/O; add any new persistence needs as a `ports` interface method, implement it in `internal/persistence/sqlite`, add a migration, add Command/Query types in `engine/commands.go`/`queries.go` plus their transport re-exports, and wire a new TUI screen under `tui/screens` that talks only through `transport`.
+
+## Deployment
+
+This repo is a submodule of `conf` (the homelab coordinator repo, checked out as a sibling directory). There's nothing to deploy today — `cmd/rpg-server` is still an empty M9 placeholder. Once the multiplayer server exists, it deploys through the `ultimate` CLI the same way `jester`/`Conquest` do; see `conf`'s `doc/design/architecture.md` ("`conf` as Coordinator").
