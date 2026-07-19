@@ -5,3 +5,4 @@ coverage.out
 *.db-journal
 *.db-wal
 *.db-shm
+.install.stamp

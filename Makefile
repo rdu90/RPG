@@ -1,17 +1,32 @@
-MODULE     := github.com/rdu90/RPG
-BIN_DIR    := bin
-DIST_DIR   := dist
-BINARY     := rpg
-CMD_PKG    := ./cmd/rpg
+MODULE        := github.com/rdu90/RPG
+BIN_DIR       := bin
+DIST_DIR      := dist
+BINARY        := rpg
+CMD_PKG       := ./cmd/rpg
+INSTALL_STAMP := .install.stamp
 
 PLATFORMS  := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: all build run test test-verbose test-race cover cover-html fmt fmt-write vet lint tidy vuln check release clean help new-migration db-shell db-query saves
+.PHONY: all build run test test-verbose test-race cover cover-html fmt fmt-write vet lint tidy vuln check release clean help
+.PHONY: install reinstall clean-install-stamp new-migration db-shell db-query saves
 
 all: build
 
-build: ## Build the rpg binary into bin/
+build: install ## Build the rpg binary into bin/
 	go build -o $(BIN_DIR)/$(BINARY) $(CMD_PKG)
+
+install: $(INSTALL_STAMP) ## Run the install.sh script to make sure the env is setup
+
+$(INSTALL_STAMP):
+	./install.sh
+	touch $@
+
+reinstall: clean-install-stamp ## Force a rerun of the installer
+	$(MAKE) install
+
+.PHONY: clean-install-stamp
+clean-install-stamp:
+	@rm $(INSTALL_STAMP)
 
 run: build ## Build and run the rpg binary
 	./$(BIN_DIR)/$(BINARY)
